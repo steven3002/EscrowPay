@@ -106,6 +106,13 @@ func New(now time.Time, spec Spec) (Outcome, error) {
 	}, nil
 }
 
+// ValidateSpec reports whether spec satisfies the construction invariants, so a
+// caller can reject bad terms before persisting a draft rather than only at
+// acceptance. New performs the same validation internally.
+func ValidateSpec(spec Spec) error {
+	return spec.validate()
+}
+
 // BuyerTotalKobo is the amount the buyer funds: vendor allocation plus any
 // broker commission plus the protection premium.
 func (p Pocket) BuyerTotalKobo() int64 {

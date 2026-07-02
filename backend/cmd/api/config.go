@@ -1,17 +1,61 @@
 package main
 
-import "os"
+import (
+	"log/slog"
+	"os"
+	"strconv"
+	"time"
+)
 
+// config holds the process configuration resolved from the environment. Secrets
+// fall back to fixed development values so the demo runs out of the box; a
+// production deployment must set them explicitly (see loadConfig warnings).
 type config struct {
 	DatabaseURL string
 	ListenAddr  string
+
+	LinkTokenSecret   []byte
+	ReleaseCodeSecret []byte
+
+	// SandboxMode gates demo-only affordances such as simulate-funding and the
+	// open admin surface. The payment scope flips the default to false.
+	SandboxMode bool
+
+	// Pocket policy durations applied when a pocket is constructed and reloaded.
+	FundingLinkTTL        time.Duration
+	GracePeriod           time.Duration
+	EvidenceCaptureWindow time.Duration
 }
 
-func loadConfig() config {
-	return config{
-		DatabaseURL: envOr("DATABASE_URL", ""),
-		ListenAddr:  envOr("LISTEN_ADDR", ":8080"),
+// devLinkTokenSecret and devReleaseCodeSecret are used only when the
+// corresponding environment variables are unset. They are not secret and must
+// never protect real funds.
+const (
+	devLinkTokenSecret   = "escrowpay-dev-link-token-secret-change-me"
+	devReleaseCodeSecret = "escrowpay-dev-release-code-secret-change-me"
+)
+
+func loadConfig(logger *slog.Logger) config {
+	cfg := config{
+		DatabaseURL:           envOr("DATABASE_URL", "postgres://escrowpay:escrowpay_dev@localhost:5433/escrowpay"),
+		ListenAddr:            envOr("LISTEN_ADDR", ":8080"),
+		LinkTokenSecret:       []byte(envOr("LINK_TOKEN_SECRET", "")),
+		ReleaseCodeSecret:     []byte(envOr("RELEASE_CODE_SECRET", "")),
+		SandboxMode:           envBool("SANDBOX_MODE", true),
+		FundingLinkTTL:        envHours("FUNDING_LINK_TTL_HOURS", 72),
+		GracePeriod:           envHours("GRACE_HOURS", 24),
+		EvidenceCaptureWindow: envMinutes("EVIDENCE_CAPTURE_WINDOW_MINUTES", 60),
 	}
+
+	if len(cfg.LinkTokenSecret) == 0 {
+		logger.Warn("LINK_TOKEN_SECRET unset; using an insecure development secret")
+		cfg.LinkTokenSecret = []byte(devLinkTokenSecret)
+	}
+	if len(cfg.ReleaseCodeSecret) == 0 {
+		logger.Warn("RELEASE_CODE_SECRET unset; using an insecure development secret")
+		cfg.ReleaseCodeSecret = []byte(devReleaseCodeSecret)
+	}
+	return cfg
 }
 
 func envOr(key, fallback string) string {
@@ -19,4 +63,36 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func envHours(key string, fallbackHours int) time.Duration {
+	return time.Duration(envInt(key, fallbackHours)) * time.Hour
+}
+
+func envMinutes(key string, fallbackMinutes int) time.Duration {
+	return time.Duration(envInt(key, fallbackMinutes)) * time.Minute
+}
+
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

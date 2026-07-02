@@ -13,12 +13,17 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"escrowpay/internal/gateway/mock"
+	"escrowpay/internal/httpapi"
+	"escrowpay/internal/linktoken"
+	"escrowpay/internal/notify/logstub"
+	"escrowpay/internal/pocketapp"
 	"escrowpay/internal/store"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	cfg := loadConfig()
+	cfg := loadConfig(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -36,8 +41,26 @@ func main() {
 	}
 	defer pool.Close()
 
+	// Wire the application: persistence, the mock payment gateway (until s8), the
+	// log-stub notifier, and demo-grade link tokens.
+	repo := store.New(pool, cfg.FundingLinkTTL, cfg.GracePeriod, cfg.EvidenceCaptureWindow)
+	minter := linktoken.NewMinter(cfg.LinkTokenSecret)
+	app := pocketapp.New(pocketapp.Config{
+		Store:                 repo,
+		Gateway:               mock.New(),
+		Notifier:              logstub.New(logger),
+		Minter:                minter,
+		Logger:                logger,
+		ReleaseCodeSecret:     cfg.ReleaseCodeSecret,
+		FundingLinkTTL:        cfg.FundingLinkTTL,
+		GracePeriod:           cfg.GracePeriod,
+		EvidenceCaptureWindow: cfg.EvidenceCaptureWindow,
+		Sandbox:               cfg.SandboxMode,
+	})
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler(pool))
+	httpapi.New(app, minter, logger).Register(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -46,7 +69,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("api listening", slog.String("addr", cfg.ListenAddr))
+		logger.Info("api listening", slog.String("addr", cfg.ListenAddr), slog.Bool("sandbox", cfg.SandboxMode))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("server failed", slog.String("error", err.Error()))
 			stop()
