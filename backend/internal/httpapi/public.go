@@ -21,16 +21,12 @@ func (a *API) handlePublicView(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildPocketView(rec, parts, role))
 }
 
-type claimRequest struct {
-	Phone       string `json:"phone"`
-	DisplayName string `json:"display_name"`
-}
-
-// handleClaim binds the caller to their role on a draft pocket.
+// handleClaim binds the signed-in account to the role the link token names.
+// The token is the invitation; the session is the identity that takes the
+// seat. Once bound, only that account's session can act on the seat.
 func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
-	var req claimRequest
-	if err := decodeJSON(r, &req); err != nil {
-		a.writeError(w, err)
+	user, ok := a.requireUser(w, r)
+	if !ok {
 		return
 	}
 	rec, parts, err := a.app.LoadByShortCode(r.Context(), r.PathValue("shortCode"))
@@ -38,12 +34,12 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, err)
 		return
 	}
-	role, err := a.authParticipant(r, rec.ID, parts)
+	role, err := a.inviteRole(r, rec.ID, user.ID, parts)
 	if err != nil {
 		a.writeError(w, err)
 		return
 	}
-	if err := a.app.Claim(r.Context(), rec.ID, pocket.Role(role), req.Phone, req.DisplayName); err != nil {
+	if err := a.app.Claim(r.Context(), rec.ID, pocket.Role(role), user.ID); err != nil {
 		a.writeError(w, err)
 		return
 	}

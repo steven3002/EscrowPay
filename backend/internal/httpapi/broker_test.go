@@ -21,29 +21,30 @@ func brokerInitiated() map[string]any {
 		"premium_kobo":              20000,
 		"item_description":          "Nikon Z6 camera",
 		"category":                  "electronics",
-		"creator": map[string]any{
-			"phone":        "+2348030000003",
-			"display_name": "Bridge Broker",
-		},
 	}
+}
+
+func brokerActor(t *testing.T, e *testEnv) *actor {
+	t.Helper()
+	return e.login(t, "+2348030000003", "Bridge Broker")
 }
 
 // acceptBrokered runs the vendor-first acceptance: vendor claims and accepts,
 // then the buyer claims and accepts, firing transition #1.
-func acceptBrokered(t *testing.T, e *testEnv, cr createResp) {
+func acceptBrokered(t *testing.T, e *testEnv, c cast, cr createResp) {
 	t.Helper()
 	vt := cr.Tokens["vendor"]
-	if s, d := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/claim", vt, map[string]any{"phone": "+2348010000001", "display_name": "Ada Vendor"}); s != 200 {
+	if s, d := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/claim", vt, map[string]any{}); s != 200 {
 		t.Fatalf("vendor claim: %d %s", s, d)
 	}
-	if s, d := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", vt, map[string]any{}); s != 200 {
+	if s, d := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/accept", "", map[string]any{}); s != 200 {
 		t.Fatalf("vendor accept: %d %s", s, d)
 	}
 	bt := cr.Tokens["buyer"]
-	if s, d := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/claim", bt, map[string]any{"phone": "+2348020000002", "display_name": "Bola Buyer"}); s != 200 {
+	if s, d := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/claim", bt, map[string]any{}); s != 200 {
 		t.Fatalf("buyer claim: %d %s", s, d)
 	}
-	if s, d := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", bt, map[string]any{"delivery_address": "14 Marina Road, Lagos"}); s != 200 {
+	if s, d := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/accept", "", map[string]any{"delivery_address": "14 Marina Road, Lagos"}); s != 200 {
 		t.Fatalf("buyer accept: %d %s", s, d)
 	}
 }
@@ -53,30 +54,32 @@ func acceptBrokered(t *testing.T, e *testEnv, cr createResp) {
 // succeeds once the vendor has confirmed.
 func TestBrokeredVendorFirstAcceptance(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, brokerInitiated())
+	c := stdCast(t, e)
+	broker := brokerActor(t, e)
+	cr := createPocket(t, e, broker, brokerInitiated())
 	if cr.CounterpartyRole != "" {
 		t.Fatalf("brokered counterparty_role = %q, want empty (two counterparties)", cr.CounterpartyRole)
 	}
 
 	bt := cr.Tokens["buyer"]
-	if s, _ := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/claim", bt, map[string]any{"phone": "+2348020000002", "display_name": "Bola"}); s != 200 {
+	if s, _ := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/claim", bt, map[string]any{}); s != 200 {
 		t.Fatalf("buyer claim status = %d", s)
 	}
 	// Buyer accepts before the vendor: rejected.
-	if s, _ := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", bt, map[string]any{"delivery_address": "14 Marina"}); s != 409 {
+	if s, _ := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/accept", "", map[string]any{"delivery_address": "14 Marina"}); s != 409 {
 		t.Fatalf("early buyer accept status = %d, want 409", s)
 	}
 
 	// Vendor accepts, then the buyer's acceptance goes through and fires #1.
 	vt := cr.Tokens["vendor"]
-	e.req(t, "POST", "/api/p/"+cr.ShortCode+"/claim", vt, map[string]any{"phone": "+2348010000001", "display_name": "Ada"})
-	if s, d := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", vt, map[string]any{}); s != 200 {
+	e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/claim", vt, map[string]any{})
+	if s, d := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/accept", "", map[string]any{}); s != 200 {
 		t.Fatalf("vendor accept: %d %s", s, d)
 	}
-	if s, d := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", bt, map[string]any{"delivery_address": "14 Marina"}); s != 200 {
+	if s, d := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/accept", "", map[string]any{"delivery_address": "14 Marina"}); s != 200 {
 		t.Fatalf("buyer accept after vendor: %d %s", s, d)
 	}
-	if got := stateOf(t, e, cr); got != "CREATED" {
+	if got := stateOf(t, e, c, cr); got != "CREATED" {
 		t.Fatalf("state = %s, want CREATED", got)
 	}
 }
@@ -86,13 +89,15 @@ func TestBrokeredVendorFirstAcceptance(t *testing.T) {
 // sweeps.
 func TestBrokeredSplitSettlement(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, brokerInitiated())
-	acceptBrokered(t, e, cr)
+	c := stdCast(t, e)
+	broker := brokerActor(t, e)
+	cr := createPocket(t, e, broker, brokerInitiated())
+	acceptBrokered(t, e, c, cr)
 	if s, d := e.req(t, "POST", "/api/demo/pockets/"+cr.PocketID+"/simulate-funding", "", nil); s != 200 {
 		t.Fatalf("funding: %d %s", s, d)
 	}
-	code := releaseCodeOf(t, e, cr)
-	if _, res := enterCode(t, e, cr, code); res.State != "DELIVERED_PENDING" {
+	code := releaseCodeOf(t, e, c, cr)
+	if _, res := enterCode(t, e, c, cr, code); res.State != "DELIVERED_PENDING" {
 		t.Fatalf("code entry state = %s", res.State)
 	}
 
@@ -100,7 +105,7 @@ func TestBrokeredSplitSettlement(t *testing.T) {
 	if rep := e.tick(t); rep.Settled != 1 {
 		t.Fatalf("sweep = %+v, want 1 settled", rep)
 	}
-	if got := stateOf(t, e, cr); got != "SETTLED" {
+	if got := stateOf(t, e, c, cr); got != "SETTLED" {
 		t.Fatalf("state = %s, want SETTLED", got)
 	}
 
@@ -147,12 +152,14 @@ func TestBrokeredSplitSettlement(t *testing.T) {
 // same money shape as a p2p buyer view (no vendor split, no vendor identity).
 func TestBrokeredDoubleBlindViews(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, brokerInitiated())
-	acceptBrokered(t, e, cr)
+	c := stdCast(t, e)
+	broker := brokerActor(t, e)
+	cr := createPocket(t, e, broker, brokerInitiated())
+	acceptBrokered(t, e, c, cr)
 	e.req(t, "POST", "/api/demo/pockets/"+cr.PocketID+"/simulate-funding", "", nil)
 
 	// Vendor view: allocation only.
-	_, vd := e.req(t, "GET", "/api/p/"+cr.ShortCode, cr.Tokens["vendor"], nil)
+	_, vd := e.reqAs(t, c.vendor, "GET", "/api/p/"+cr.ShortCode, "", nil)
 	vendorMoney := decode[map[string]any](t, vd)["money"].(map[string]any)
 	if _, ok := vendorMoney["amount_kobo"]; !ok {
 		t.Fatal("vendor must see amount_kobo")
@@ -165,7 +172,7 @@ func TestBrokeredDoubleBlindViews(t *testing.T) {
 
 	// Buyer view money shape equals the p2p buyer shape: exactly currency +
 	// buyer_total_kobo, nothing revealing the split.
-	_, bd := e.req(t, "GET", "/api/p/"+cr.ShortCode, cr.Tokens["buyer"], nil)
+	_, bd := e.reqAs(t, c.buyer, "GET", "/api/p/"+cr.ShortCode, "", nil)
 	buyerView := decode[map[string]any](t, bd)
 	buyerMoney := buyerView["money"].(map[string]any)
 	gotKeys := make([]string, 0, len(buyerMoney))
@@ -187,17 +194,20 @@ func TestBrokeredDoubleBlindViews(t *testing.T) {
 // with no payout legs.
 func TestBrokeredDisputeRefund(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, brokerInitiated())
-	acceptBrokered(t, e, cr)
+	c := stdCast(t, e)
+	broker := brokerActor(t, e)
+	cr := createPocket(t, e, broker, brokerInitiated())
+	acceptBrokered(t, e, c, cr)
 	e.req(t, "POST", "/api/demo/pockets/"+cr.PocketID+"/simulate-funding", "", nil)
-	code := releaseCodeOf(t, e, cr)
-	enterCode(t, e, cr, code) // -> DELIVERED_PENDING
-	e.req(t, "POST", "/api/p/"+cr.ShortCode+"/report-issue", cr.Tokens["buyer"], nil)
+	code := releaseCodeOf(t, e, c, cr)
+	enterCode(t, e, c, cr, code) // -> DELIVERED_PENDING
+	e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/report-issue", "", nil)
 
-	if s, d := e.req(t, "POST", "/api/admin/pockets/"+cr.PocketID+"/force-refund", "", nil); s != 200 {
+	admin := e.loginAdmin(t)
+	if s, d := e.reqAs(t, admin, "POST", "/api/admin/pockets/"+cr.PocketID+"/force-refund", "", nil); s != 200 {
 		t.Fatalf("force-refund: %d %s", s, d)
 	}
-	if got := stateOf(t, e, cr); got != "REFUNDED" {
+	if got := stateOf(t, e, c, cr); got != "REFUNDED" {
 		t.Fatalf("state = %s, want REFUNDED", got)
 	}
 

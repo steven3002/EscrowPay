@@ -13,8 +13,8 @@ type simulateFundingResponse struct {
 }
 
 // handleSimulateFunding drives transition #2 through the mock gateway. It stands
-// in for a real funding webhook and is gated by sandbox mode; the payment scope
-// (s8) replaces it with signed webhook ingestion.
+// in for a real funding webhook and is gated by sandbox mode; the production
+// payment integration replaces it with signed webhook ingestion.
 func (a *API) handleSimulateFunding(w http.ResponseWriter, r *http.Request) {
 	if !a.app.Sandbox() {
 		a.writeError(w, pocketapp.ErrForbidden)

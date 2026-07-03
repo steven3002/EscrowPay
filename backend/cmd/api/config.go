@@ -18,7 +18,8 @@ type config struct {
 	ReleaseCodeSecret []byte
 
 	// SandboxMode gates demo-only affordances such as simulate-funding and the
-	// open admin surface. The payment scope flips the default to false.
+	// open admin surface. Production payment integration flips the default to
+	// false.
 	SandboxMode bool
 
 	// Pocket policy durations applied when a pocket is constructed and reloaded.
@@ -35,6 +36,25 @@ type config struct {
 	// EvidenceMaxBytes caps a single upload.
 	EvidenceDir      string
 	EvidenceMaxBytes int64
+
+	// SessionTTL bounds how long a sign-in lasts; CookieSecure must be true
+	// wherever the app is served over HTTPS.
+	SessionTTL   time.Duration
+	CookieSecure bool
+
+	// TrustProxy keys rate limits on X-Forwarded-For; enable only when every
+	// request arrives through the app's own reverse proxy.
+	TrustProxy bool
+	// RateLimitEnabled turns the per-client request limiters on.
+	RateLimitEnabled bool
+
+	// Google OIDC sign-in. Enabled only when client id, secret and redirect
+	// URL are all present; the issuer is discoverable and overridable for
+	// tests.
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string
+	GoogleIssuer       string
 }
 
 // devLinkTokenSecret and devReleaseCodeSecret are used only when the
@@ -59,6 +79,14 @@ func loadConfig(logger *slog.Logger) config {
 		SweeperInterval:       envSeconds("SWEEPER_INTERVAL_SECONDS", 60),
 		EvidenceDir:           envOr("EVIDENCE_DIR", "./data/evidence"),
 		EvidenceMaxBytes:      int64(envInt("EVIDENCE_MAX_MB", 25)) << 20,
+		SessionTTL:            envHours("SESSION_TTL_HOURS", 720),
+		CookieSecure:          envBool("COOKIE_SECURE", false),
+		TrustProxy:            envBool("TRUST_PROXY", true),
+		RateLimitEnabled:      envBool("RATE_LIMIT_ENABLED", true),
+		GoogleClientID:        envOr("GOOGLE_CLIENT_ID", ""),
+		GoogleClientSecret:    envOr("GOOGLE_CLIENT_SECRET", ""),
+		GoogleRedirectURL:     envOr("GOOGLE_REDIRECT_URL", ""),
+		GoogleIssuer:          envOr("GOOGLE_ISSUER", ""),
 	}
 
 	if len(cfg.LinkTokenSecret) == 0 {

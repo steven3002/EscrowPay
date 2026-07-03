@@ -1,8 +1,9 @@
 // Single typed fetch layer for the EscrowPay API. Every network call in the app
 // goes through here; components never call fetch directly. Requests are
 // same-origin ("/api/...") and proxied to the Go backend by next.config
-// rewrites, so no CORS handling is needed. Link-token auth is passed as the
-// X-Link-Token header.
+// rewrites, so no CORS handling is needed and the session cookie rides along
+// automatically. A link token (invitation) is passed as the X-Link-Token
+// header when present; a claimed seat is authorized by the session alone.
 
 export type Role = "buyer" | "vendor" | "broker";
 export type Structure = "p2p" | "brokered";
@@ -57,6 +58,37 @@ export interface PocketView {
   created_at: string;
 }
 
+export interface User {
+  id: string;
+  display_name: string;
+  phone?: string;
+  email?: string;
+  avatar_url?: string;
+  is_admin: boolean;
+  trust_tier: number;
+  strikes: number;
+}
+
+export interface AuthProviders {
+  google: boolean;
+  demo: boolean;
+}
+
+export interface PocketSummary {
+  id: string;
+  short_code: string;
+  state: PocketState;
+  structure: Structure;
+  mode: Mode;
+  role: Role;
+  active: boolean;
+  item: { description: string; category: string };
+  money: Money;
+  counterparty?: string;
+  timers: Timers;
+  created_at: string;
+}
+
 export interface CreateRequest {
   structure: Structure;
   creator_role: Role;
@@ -68,7 +100,6 @@ export interface CreateRequest {
   premium_kobo: number;
   item_description: string;
   category: string;
-  creator: { phone: string; display_name: string };
 }
 
 export interface CreateResponse {
@@ -189,17 +220,27 @@ async function request<T>(
 }
 
 export const api = {
+  me: () => request<{ user: User }>("GET", "/auth/me"),
+
+  authProviders: () => request<AuthProviders>("GET", "/auth/providers"),
+
+  demoLogin: (phone: string, displayName: string, admin = false) =>
+    request<{ user: User }>("POST", "/auth/demo", {
+      body: { phone, display_name: displayName, admin },
+    }),
+
+  logout: () => request<null>("POST", "/auth/logout"),
+
+  myPockets: () => request<{ pockets: PocketSummary[] }>("GET", "/me/pockets"),
+
   createPocket: (req: CreateRequest) =>
     request<CreateResponse>("POST", "/pockets", { body: req }),
 
   getPocket: (shortCode: string, token: string) =>
     request<PocketView>("GET", `/p/${shortCode}`, { token }),
 
-  claim: (shortCode: string, token: string, phone: string, displayName: string) =>
-    request<PocketView>("POST", `/p/${shortCode}/claim`, {
-      token,
-      body: { phone, display_name: displayName },
-    }),
+  claim: (shortCode: string, token: string) =>
+    request<PocketView>("POST", `/p/${shortCode}/claim`, { token, body: {} }),
 
   accept: (shortCode: string, token: string, deliveryAddress?: string) =>
     request<PocketView>("POST", `/p/${shortCode}/accept`, {

@@ -54,11 +54,10 @@ type adminEvent struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// handleAdminDetail returns a pocket's full detail and timeline. Admin auth is
-// demo-grade: the surface is open only while sandbox mode is on.
+// handleAdminDetail returns a pocket's full detail and timeline. The admin
+// surface requires a signed-in admin account in every mode.
 func (a *API) handleAdminDetail(w http.ResponseWriter, r *http.Request) {
-	if !a.app.Sandbox() {
-		a.writeError(w, errForbidden)
+	if _, ok := a.requireAdmin(w, r); !ok {
 		return
 	}
 	view, err := a.assembleAdminDetail(r, r.PathValue("id"))
@@ -74,11 +73,9 @@ type forcePayoutRequest struct {
 }
 
 // handleForceRefund is the admin arbitration outcome against the vendor: refund
-// the buyer and flag the vendor (#14). Sandbox-gated like the rest of the admin
-// surface.
+// the buyer and flag the vendor (#14).
 func (a *API) handleForceRefund(w http.ResponseWriter, r *http.Request) {
-	if !a.app.Sandbox() {
-		a.writeError(w, errForbidden)
+	if _, ok := a.requireAdmin(w, r); !ok {
 		return
 	}
 	if _, err := a.app.ForceRefund(r.Context(), r.PathValue("id")); err != nil {
@@ -91,8 +88,7 @@ func (a *API) handleForceRefund(w http.ResponseWriter, r *http.Request) {
 // handleForcePayout is the admin arbitration outcome against the buyer: release
 // to the vendor, optionally striking the buyer (#15).
 func (a *API) handleForcePayout(w http.ResponseWriter, r *http.Request) {
-	if !a.app.Sandbox() {
-		a.writeError(w, errForbidden)
+	if _, ok := a.requireAdmin(w, r); !ok {
 		return
 	}
 	var req forcePayoutRequest
@@ -118,8 +114,7 @@ type disputeQueueItem struct {
 
 // handleDisputeQueue returns the open-dispute arbitration queue.
 func (a *API) handleDisputeQueue(w http.ResponseWriter, r *http.Request) {
-	if !a.app.Sandbox() {
-		a.writeError(w, errForbidden)
+	if _, ok := a.requireAdmin(w, r); !ok {
 		return
 	}
 	items, err := a.app.ListDisputes(r.Context())

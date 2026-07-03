@@ -20,10 +20,6 @@ type createRequest struct {
 	PremiumKobo             int64  `json:"premium_kobo"`
 	ItemDescription         string `json:"item_description"`
 	Category                string `json:"category"`
-	Creator                 struct {
-		Phone       string `json:"phone"`
-		DisplayName string `json:"display_name"`
-	} `json:"creator"`
 }
 
 type createResponse struct {
@@ -35,10 +31,14 @@ type createResponse struct {
 	Tokens           map[string]string `json:"tokens"`
 }
 
-// handleCreate creates a draft pocket. It is initiator-agnostic: creator_role
-// selects who authored it. The response carries a link token per role; the
-// counterparty's is the one to share.
+// handleCreate creates a draft pocket authored by the signed-in account. It is
+// initiator-agnostic: creator_role selects who authored it. The response
+// carries a link token per role; the counterparty's is the one to share.
 func (a *API) handleCreate(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
 	var req createRequest
 	if err := decodeJSON(r, &req); err != nil {
 		a.writeError(w, err)
@@ -46,18 +46,17 @@ func (a *API) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := pocketapp.CreateInput{
-		Structure:          pocket.Structure(defaultStr(req.Structure, string(pocket.StructureP2P))),
-		CreatorRole:        pocket.Role(req.CreatorRole),
-		Mode:               pocket.Mode(req.Mode),
-		InspectionWindow:   time.Duration(req.InspectionWindowMinutes) * time.Minute,
-		DeliveryWindow:     time.Duration(req.DeliveryWindowMinutes) * time.Minute,
-		AmountKobo:         req.AmountKobo,
-		CommissionKobo:     req.CommissionKobo,
-		PremiumKobo:        req.PremiumKobo,
-		ItemDescription:    req.ItemDescription,
-		Category:           defaultStr(req.Category, "general"),
-		CreatorPhone:       req.Creator.Phone,
-		CreatorDisplayName: req.Creator.DisplayName,
+		Structure:        pocket.Structure(defaultStr(req.Structure, string(pocket.StructureP2P))),
+		CreatorRole:      pocket.Role(req.CreatorRole),
+		Mode:             pocket.Mode(req.Mode),
+		InspectionWindow: time.Duration(req.InspectionWindowMinutes) * time.Minute,
+		DeliveryWindow:   time.Duration(req.DeliveryWindowMinutes) * time.Minute,
+		AmountKobo:       req.AmountKobo,
+		CommissionKobo:   req.CommissionKobo,
+		PremiumKobo:      req.PremiumKobo,
+		ItemDescription:  req.ItemDescription,
+		Category:         defaultStr(req.Category, "general"),
+		CreatorUserID:    user.ID,
 	}
 
 	out, err := a.app.Create(r.Context(), in)

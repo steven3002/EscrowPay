@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"escrowpay/internal/auth"
 	"escrowpay/internal/evidence"
 	"escrowpay/internal/gateway/mock"
 	"escrowpay/internal/httpapi"
@@ -155,16 +156,24 @@ type testEnv struct {
 	gateway *mock.Gateway
 	store   *store.Store
 	minter  *linktoken.Minter
+	auth    *auth.Manager
 	logs    *safeBuffer
 	clock   *testClock
 	sweeper *settlement.Sweeper
 }
 
-func newTestEnv(t *testing.T) *testEnv { return newEnv(t, true) }
+func newTestEnv(t *testing.T) *testEnv { return newEnv(t, envOptions{sandbox: true}) }
 
-// newEnv builds a running API with the given sandbox mode, so tests can exercise
+// envOptions selects the transport policy under test. Rate limiting is off by
+// default so unrelated tests stay deterministic.
+type envOptions struct {
+	sandbox   bool
+	rateLimit bool
+}
+
+// newEnv builds a running API with the given options, so tests can exercise
 // both the demo-open surface and its non-sandbox rejection.
-func newEnv(t *testing.T, sandbox bool) *testEnv {
+func newEnv(t *testing.T, opts envOptions) *testEnv {
 	t.Helper()
 	if testPool == nil {
 		t.Skip("integration Postgres not available")
@@ -194,13 +203,26 @@ func newEnv(t *testing.T, sandbox bool) *testEnv {
 		GracePeriod:           24 * time.Hour,
 		EvidenceCaptureWindow: 60 * time.Minute,
 		EvidenceMaxBytes:      8 << 20,
-		Sandbox:               sandbox,
+		Sandbox:               opts.sandbox,
 		Now:                   clock.now,
 	})
 
+	// Sessions use the wall clock: cookie expiry must outlive tests that
+	// advance the domain clock by days.
+	sessions := auth.NewManager(repo, 30*24*time.Hour, false, nil)
+
+	api := httpapi.New(httpapi.Config{
+		App:        app,
+		Minter:     minter,
+		Auth:       sessions,
+		Users:      repo,
+		Logger:     logger,
+		FlowSecret: []byte(testLinkTokenSecret),
+		RateLimit:  opts.rateLimit,
+	})
 	mux := http.NewServeMux()
-	httpapi.New(app, minter, logger).Register(mux)
-	srv := httptest.NewServer(mux)
+	api.Register(mux)
+	srv := httptest.NewServer(api.Middleware(mux))
 	t.Cleanup(srv.Close)
 
 	return &testEnv{
@@ -208,6 +230,7 @@ func newEnv(t *testing.T, sandbox bool) *testEnv {
 		gateway: gw,
 		store:   repo,
 		minter:  minter,
+		auth:    sessions,
 		logs:    logs,
 		clock:   clock,
 		sweeper: settlement.NewSweeper(app, time.Minute, logger),
@@ -223,15 +246,95 @@ func (e *testEnv) tick(t *testing.T) settlement.Report {
 func truncate(t *testing.T) {
 	t.Helper()
 	_, err := testPool.Exec(context.Background(),
-		`TRUNCATE settlements, evidence, disputes, pocket_events, pocket_participants, pockets, users, webhook_events RESTART IDENTITY CASCADE`)
+		`TRUNCATE sessions, settlements, evidence, disputes, pocket_events, pocket_participants, pockets, users, webhook_events RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 }
 
-// req issues an HTTP request with an optional link token and JSON body and
-// returns the status code and raw response body.
+// actor is a signed-in account driving requests: the session cookie plus the
+// account's identity for assertions.
+type actor struct {
+	cookie *http.Cookie
+	ID     string
+}
+
+// login signs in (creating on first use) a demo account and returns it as an
+// actor. It goes through the real demo-login endpoint, cookie and all.
+func (e *testEnv) login(t *testing.T, phone, name string) *actor {
+	t.Helper()
+	return e.loginWith(t, map[string]any{"phone": phone, "display_name": name})
+}
+
+// loginAdmin signs in the arbitration account.
+func (e *testEnv) loginAdmin(t *testing.T) *actor {
+	t.Helper()
+	return e.loginWith(t, map[string]any{"phone": "+2348090000009", "display_name": "Desk Admin", "admin": true})
+}
+
+func (e *testEnv) loginWith(t *testing.T, body map[string]any) *actor {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(e.server.URL+"/api/auth/demo", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("demo login: status %d, body %s", resp.StatusCode, data)
+	}
+	var me struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(data, &me); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == "escrowpay_session" {
+			return &actor{cookie: c, ID: me.User.ID}
+		}
+	}
+	t.Fatal("demo login set no session cookie")
+	return nil
+}
+
+// sessionFor mints a session cookie for an existing user without the demo
+// endpoint, for environments where it is disabled.
+func (e *testEnv) sessionFor(t *testing.T, userID string) *actor {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	if err := e.auth.Issue(context.Background(), rec, userID, "", "test"); err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "escrowpay_session" {
+			return &actor{cookie: c, ID: userID}
+		}
+	}
+	t.Fatal("issue set no session cookie")
+	return nil
+}
+
+// req issues an anonymous HTTP request with an optional link token and JSON
+// body and returns the status code and raw response body.
 func (e *testEnv) req(t *testing.T, method, path, token string, body any) (int, []byte) {
+	t.Helper()
+	return e.do(t, nil, method, path, token, body)
+}
+
+// reqAs is req with the actor's session cookie attached.
+func (e *testEnv) reqAs(t *testing.T, ac *actor, method, path, token string, body any) (int, []byte) {
+	t.Helper()
+	return e.do(t, ac, method, path, token, body)
+}
+
+func (e *testEnv) do(t *testing.T, ac *actor, method, path, token string, body any) (int, []byte) {
 	t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -250,6 +353,9 @@ func (e *testEnv) req(t *testing.T, method, path, token string, body any) (int, 
 	}
 	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
+	}
+	if ac != nil {
+		httpReq.AddCookie(ac.cookie)
 	}
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

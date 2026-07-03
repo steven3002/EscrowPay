@@ -11,6 +11,7 @@ import {
 } from "@/lib/api";
 import { formatKobo } from "@/lib/format";
 import { remember } from "@/lib/recent";
+import { useMe } from "@/lib/useMe";
 import { usePolling } from "@/lib/usePolling";
 import { StateBadge } from "@/components/StateBadge";
 import { Countdown } from "@/components/Countdown";
@@ -20,6 +21,7 @@ import {
   Card,
   Field,
   Input,
+  LinkButton,
   Page,
   Row,
   SectionTitle,
@@ -36,11 +38,6 @@ export default function PocketClient({ shortCode, token }: { shortCode: string; 
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    if (!token) {
-      setError({ status: 401, message: "This link is missing its access token." });
-      setLoading(false);
-      return;
-    }
     try {
       const p = await api.getPocket(shortCode, token);
       setPocket(p);
@@ -55,7 +52,7 @@ export default function PocketClient({ shortCode, token }: { shortCode: string; 
   usePolling(refresh, 4000);
 
   useEffect(() => {
-    if (pocket) {
+    if (pocket && token) {
       remember({ shortCode, pocketId: pocket.id, role: pocket.your_role, token, item: pocket.item.description });
     }
   }, [pocket, shortCode, token]);
@@ -71,19 +68,27 @@ export default function PocketClient({ shortCode, token }: { shortCode: string; 
   }
 
   if (error || !pocket) {
+    const next = `/p/${shortCode}${token ? `?t=${encodeURIComponent(token)}` : ""}`;
     const msg =
       error?.status === 404
         ? "This pocket doesn't exist."
         : error?.status === 403
-          ? "This link isn't valid for this pocket."
+          ? "This link belongs to another account. Each seat in a pocket is locked to the account that claimed it."
           : error?.status === 401
-            ? "This link is missing or has an invalid access token."
+            ? "Sign in to open this pocket. If someone shared it with you, their link signs you into your seat after login."
             : error?.message ?? "Couldn't load this pocket.";
     return (
       <Page>
         <TopBar shortCode={shortCode} />
         <Card className="mt-6">
-          <Banner tone="red">{msg}</Banner>
+          <Banner tone={error?.status === 401 ? "blue" : "red"}>{msg}</Banner>
+          {error?.status === 401 && (
+            <div className="mt-4">
+              <LinkButton href={`/login?next=${encodeURIComponent(next)}`} tone="primary">
+                Sign in to continue
+              </LinkButton>
+            </div>
+          )}
         </Card>
       </Page>
     );
@@ -243,44 +248,46 @@ function Actions(props: ActionProps) {
 
 function AcceptPanel({ p, shortCode, token, refresh }: ActionProps) {
   const isBuyer = p.your_role === "buyer";
-  const [phone, setPhone] = useState("");
-  const [name, setName] = useState("");
+  const { user, known } = useMe();
   const [address, setAddress] = useState("");
   const { busy, error, run } = useAction();
+
+  const next = `/p/${shortCode}${token ? `?t=${encodeURIComponent(token)}` : ""}`;
 
   return (
     <Card>
       <SectionTitle>Review &amp; accept</SectionTitle>
       <p className="mb-4 text-sm text-muted">
-        You&rsquo;re joining as the {p.your_role}. Accepting locks in these terms for both sides.
+        You&rsquo;re joining as the {p.your_role}. Accepting locks in these terms for both sides and
+        ties this seat to your account — no one else can act on it, even with this link.
       </p>
-      <div className="grid gap-3">
-        <Field label="Your phone">
-          <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+2348020000002" />
-        </Field>
-        <Field label="Your name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Bola Buyer" />
-        </Field>
-        {isBuyer && (
-          <Field label="Delivery address">
-            <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="14 Marina Road, Lagos" />
-          </Field>
-        )}
-        {error && <Banner tone="red">{error}</Banner>}
-        <Button
-          tone="primary"
-          disabled={busy || !phone.trim()}
-          onClick={() =>
-            run(async () => {
-              if (!p.you.claimed) await api.claim(shortCode, token, phone.trim(), name.trim());
-              await api.accept(shortCode, token, isBuyer ? address.trim() : undefined);
-              await refresh();
-            })
-          }
-        >
-          {busy ? <Spinner /> : "Accept terms"}
-        </Button>
-      </div>
+      {known && !user ? (
+        <LinkButton href={`/login?next=${encodeURIComponent(next)}`} tone="primary">
+          Sign in to accept
+        </LinkButton>
+      ) : (
+        <div className="grid gap-3">
+          {isBuyer && (
+            <Field label="Delivery address">
+              <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="14 Marina Road, Lagos" />
+            </Field>
+          )}
+          {error && <Banner tone="red">{error}</Banner>}
+          <Button
+            tone="primary"
+            disabled={busy || !user}
+            onClick={() =>
+              run(async () => {
+                if (!p.you.claimed) await api.claim(shortCode, token);
+                await api.accept(shortCode, token, isBuyer ? address.trim() : undefined);
+                await refresh();
+              })
+            }
+          >
+            {busy ? <Spinner /> : "Accept terms"}
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }
@@ -356,16 +363,41 @@ function AwaitPaymentPanel({ p, shortCode, token, refresh }: ActionProps) {
   );
 }
 
+// CodeShield is the permanent warning rendered directly above the Release
+// Code, wherever the code appears. The code is the money: the one scam this
+// screen must survive is a counterparty talking the buyer into reading it out
+// before the package is physically in hand.
+function CodeShield() {
+  return (
+    <div className="rounded-xl border-2 border-red-500 bg-red-500/10 px-4 py-3">
+      <p className="text-sm font-extrabold uppercase tracking-wide text-red-700 dark:text-red-300">
+        ✋ Stop — this code is your money
+      </p>
+      <ul className="mt-2 grid list-disc gap-1 pl-4 text-sm text-red-900 dark:text-red-200">
+        <li>
+          <strong>Never</strong> give this code over a phone call, chat, or WhatsApp — not to the
+          seller, not to &ldquo;support&rdquo;.
+        </li>
+        <li>
+          Give it <strong>only</strong> to the delivery person physically handing you the package.
+        </li>
+        <li>
+          If the rider asks for <strong>cash</strong> instead of the code, refuse and don&rsquo;t pay
+          — keep the code, let the delivery fail, and report the issue below. Your money stays
+          protected.
+        </li>
+      </ul>
+    </div>
+  );
+}
+
 function ReleaseCodePanel({ p, token }: ActionProps) {
   const [code, setCode] = useState<string | null>(null);
   const { busy, error, run } = useAction();
   return (
     <Card>
       <SectionTitle>Your Release Code</SectionTitle>
-      <Banner tone="amber">
-        Only read this code out once the item is physically in your hands. Sharing it releases the
-        money to the vendor.
-      </Banner>
+      <CodeShield />
       <div className="mt-4">
         {code ? (
           <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-6 text-center">
@@ -476,10 +508,11 @@ function FrozenBuyerPanel({ shortCode, token, refresh }: ActionProps) {
   const { busy, error, run } = useAction();
   return (
     <Card>
-      <SectionTitle>Delivery not confirmed</SectionTitle>
+      <SectionTitle>Report an issue</SectionTitle>
       <p className="mb-4 text-sm text-muted">
-        The delivery window closed without a Release Code. If the item never arrived, tell us — your
-        refund is armed once you attest, and issued when the grace period ends.
+        The delivery window closed without a Release Code. If the item never arrived — including a
+        rider who demanded cash and left — report it: your refund is armed once you attest, and
+        issued when the grace period ends. The vendor never gets paid without your code.
       </p>
       {error && <Banner tone="red">{error}</Banner>}
       <div className="grid gap-3">
@@ -487,13 +520,13 @@ function FrozenBuyerPanel({ shortCode, token, refresh }: ActionProps) {
           await api.attestNonReceipt(shortCode, token);
           await refresh();
         })}>
-          {busy ? <Spinner /> : "I never received the item"}
+          {busy ? <Spinner /> : "Item not delivered — start my refund"}
         </Button>
         <Button tone="ghost" disabled={busy} onClick={() => run(async () => {
           await api.openDispute(shortCode, token);
           await refresh();
         })}>
-          Open a dispute instead
+          Escalate to an arbitrator instead
         </Button>
       </div>
     </Card>

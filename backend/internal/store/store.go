@@ -1,6 +1,6 @@
 // Package store owns persistence: schema migrations, pgx-backed repositories,
 // and the single transactional write path through which every pocket state
-// change flows (see executor.go). The invariant from project-flow §4 —
+// change flows (see executor.go). The write-path invariant —
 // SELECT … FOR UPDATE → guard → state write + event insert → commit — lives
 // here and nowhere else.
 package store
@@ -38,6 +38,10 @@ var (
 	// accept before the vendor has accepted. Brokered acceptance is vendor-first:
 	// the buyer's link is inert until the vendor confirms the offer.
 	ErrAwaitingVendor = errors.New("store: brokered buyer must wait for vendor acceptance")
+	// ErrRoleConflict is returned when a user tries to claim a role in a pocket
+	// where they already hold another role. The escrow's guarantees assume the
+	// parties are distinct.
+	ErrRoleConflict = errors.New("store: user already holds a role in this pocket")
 )
 
 // StateDraft is a persistence-only position that precedes the domain state
@@ -49,7 +53,7 @@ const StateDraft = "DRAFT"
 // Store is the repository facade over a pgx pool. Policy durations are injected
 // so a reloaded pocket is well-formed for the transitions that read them
 // (funding TTL at construction; grace and evidence-capture windows at freeze
-// and handoff). This matches the blueprint's "config wires into Spec" rule.
+// and handoff): they are platform configuration, never per-pocket data.
 type Store struct {
 	pool *pgxpool.Pool
 

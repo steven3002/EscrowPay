@@ -2,13 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { Badge, Card, LinkButton, Page, SectionTitle } from "@/components/ui";
+import { useCallback, useEffect, useState } from "react";
+import { api, type PocketSummary } from "@/lib/api";
 import { listRecent, type RecentPocket } from "@/lib/recent";
+import { useMe } from "@/lib/useMe";
+import { AppHeader } from "@/components/AppHeader";
+import { StateBadge } from "@/components/StateBadge";
+import { Badge, Card, LinkButton, Page, SectionTitle } from "@/components/ui";
 
 export default function Home() {
   const router = useRouter();
+  const { user, known } = useMe();
   const [recent, setRecent] = useState<RecentPocket[]>([]);
+  const [mine, setMine] = useState<PocketSummary[] | null>(null);
   const [link, setLink] = useState("");
 
   useEffect(() => {
@@ -18,6 +24,21 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRecent(listRecent());
   }, []);
+
+  const loadMine = useCallback(async () => {
+    try {
+      const res = await api.myPockets();
+      setMine(res.pockets ?? []);
+    } catch {
+      setMine(null);
+    }
+  }, []);
+  useEffect(() => {
+    if (user) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- async fetch: state lands after the awaited response
+      loadMine();
+    }
+  }, [user, loadMine]);
 
   function openLink(e: React.FormEvent) {
     e.preventDefault();
@@ -32,14 +53,12 @@ export default function Home() {
     }
   }
 
+  const activeMine = (mine ?? []).filter((p) => p.active).slice(0, 4);
+
   return (
     <Page>
-      <header className="mb-8 mt-4">
-        <div className="mb-3 flex items-center gap-2">
-          {/* eslint-disable-next-line @next/next/no-img-element -- static inline SVG mark, no optimization needed */}
-          <img src="/icon.svg" alt="" width={36} height={36} className="h-9 w-9" />
-          <span className="text-lg font-bold tracking-tight">EscrowPay</span>
-        </div>
+      <AppHeader user={user} known={known} next="/" />
+      <header className="mb-8 mt-2">
         <h1 className="text-2xl font-bold leading-tight">
           Get paid without getting scammed.
         </h1>
@@ -63,7 +82,31 @@ export default function Home() {
         </form>
       </div>
 
-      {recent.length > 0 && (
+      {user && activeMine.length > 0 && (
+        <section className="mb-8">
+          <div className="mb-2 flex items-center justify-between">
+            <SectionTitle>Your active pockets</SectionTitle>
+            <Link href="/dashboard" className="text-xs font-semibold underline">
+              See all
+            </Link>
+          </div>
+          <div className="grid gap-2">
+            {activeMine.map((p) => (
+              <Link key={`${p.short_code}-${p.role}`} href={`/p/${p.short_code}`}>
+                <Card className="flex items-center justify-between !p-4">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">{p.item.description}</div>
+                    <div className="mt-0.5 text-xs text-muted">as {p.role}</div>
+                  </div>
+                  <StateBadge state={p.state} />
+                </Card>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {!user && recent.length > 0 && (
         <section className="mb-8">
           <SectionTitle>Your pockets on this device</SectionTitle>
           <div className="grid gap-2">

@@ -96,7 +96,7 @@ func (a *App) executeEffect(ctx context.Context, pocketID string, buyerTotal int
 
 	case pocket.StartGrace:
 		// The grace deadline is persisted by the transition itself; the sweeper
-		// (s4) acts on it. Nothing further to execute here.
+		// acts on it. Nothing further to execute here.
 		return nil
 
 	case pocket.Sanction:

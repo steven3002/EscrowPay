@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"escrowpay/internal/auth"
 	"escrowpay/internal/evidence"
 	"escrowpay/internal/gateway/mock"
 	"escrowpay/internal/httpapi"
@@ -43,8 +44,9 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Wire the application: persistence, the mock payment gateway (until s8), the
-	// log-stub notifier, and demo-grade link tokens.
+	// Wire the application: persistence, the payment gateway (mock until the
+	// real bank adapter lands), the log-stub notifier, and demo-grade link
+	// tokens.
 	repo := store.New(pool, cfg.FundingLinkTTL, cfg.GracePeriod, cfg.EvidenceCaptureWindow)
 	minter := linktoken.NewMinter(cfg.LinkTokenSecret)
 	evidenceStore, err := evidence.NewFileStore(cfg.EvidenceDir)
@@ -76,13 +78,39 @@ func main() {
 		logger.Warn("settlement sweeper disabled; timer-driven transitions will not fire")
 	}
 
+	sessions := auth.NewManager(repo, cfg.SessionTTL, cfg.CookieSecure, nil)
+	var google *auth.Google
+	if cfg.GoogleClientID != "" && cfg.GoogleClientSecret != "" && cfg.GoogleRedirectURL != "" {
+		google = auth.NewGoogle(auth.GoogleConfig{
+			Issuer:       cfg.GoogleIssuer,
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleClientSecret,
+			RedirectURL:  cfg.GoogleRedirectURL,
+		})
+		logger.Info("google sign-in enabled")
+	} else {
+		logger.Warn("google sign-in not configured; only sandbox demo login is available")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler(pool))
-	httpapi.New(app, minter, logger).Register(mux)
+	api := httpapi.New(httpapi.Config{
+		App:          app,
+		Minter:       minter,
+		Auth:         sessions,
+		Users:        repo,
+		Google:       google,
+		Logger:       logger,
+		FlowSecret:   cfg.LinkTokenSecret,
+		CookieSecure: cfg.CookieSecure,
+		TrustProxy:   cfg.TrustProxy,
+		RateLimit:    cfg.RateLimitEnabled,
+	})
+	api.Register(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           mux,
+		Handler:           api.Middleware(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

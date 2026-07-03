@@ -29,7 +29,10 @@ type row interface {
 	Scan(dest ...any) error
 }
 
-func (s *Store) scanPocket(r row) (PocketRecord, error) {
+// scanPocket reads one pocket row into a PocketRecord. Any extra destinations
+// are appended to the scan, so a caller joining additional columns after the
+// canonical list can reuse the same reader.
+func (s *Store) scanPocket(r row, extra ...any) (PocketRecord, error) {
 	var (
 		rec                                                              PocketRecord
 		structure, creatorRole, mode, state                              string
@@ -37,7 +40,7 @@ func (s *Store) scanPocket(r row) (PocketRecord, error) {
 		deliveryAddress, releaseHash, fundingRef, fundingURL, releaseEnc *string
 		deliveryDeadline, settleAfter, graceDeadline, fundingExpires     *time.Time
 	)
-	err := r.Scan(
+	dest := []any{
 		&rec.ID, &rec.ShortCode, &rec.Version, &structure, &creatorRole, &mode,
 		&rec.Pocket.AmountKobo, &rec.Pocket.CommissionKobo, &rec.Pocket.PremiumKobo,
 		&rec.ItemDescription, &rec.Category, &deliveryAddress,
@@ -45,7 +48,8 @@ func (s *Store) scanPocket(r row) (PocketRecord, error) {
 		&state, &releaseHash, &rec.Pocket.CodeAttempts, &rec.Pocket.CodeLocked,
 		&deliveryDeadline, &settleAfter, &graceDeadline, &fundingExpires,
 		&fundingRef, &fundingURL, &releaseEnc, &rec.CreatedAt,
-	)
+	}
+	err := r.Scan(append(dest, extra...)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return PocketRecord{}, ErrNotFound
@@ -182,6 +186,54 @@ func (s *Store) SetReleaseCode(ctx context.Context, id, hash, enc string) error 
 		return fmt.Errorf("set release code: %w", err)
 	}
 	return nil
+}
+
+// UserPocket is one row of a user's cross-pocket dashboard: the pocket record
+// plus the role that user holds in it.
+type UserPocket struct {
+	Record PocketRecord
+	Role   string
+}
+
+// PocketsForUser returns every pocket the user participates in, newest first,
+// with the user's role in each. It feeds the dashboard; role-scoped
+// serialization of each record remains the transport layer's responsibility.
+func (s *Store) PocketsForUser(ctx context.Context, userID string, limit int) ([]UserPocket, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+prefixColumns(pocketColumns, "p.")+`, pp.role
+		FROM pocket_participants pp
+		JOIN pockets p ON p.id = pp.pocket_id
+		WHERE pp.user_id = $1
+		ORDER BY p.created_at DESC
+		LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query user pockets: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UserPocket
+	for rows.Next() {
+		var role string
+		rec, err := s.scanPocket(rows, &role)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, UserPocket{Record: rec, Role: role})
+	}
+	return out, rows.Err()
+}
+
+// prefixColumns qualifies each column in a comma-separated SELECT list with a
+// table alias, so the canonical pocket column list can be reused in joins.
+func prefixColumns(columns, prefix string) string {
+	parts := strings.Split(columns, ",")
+	for i, c := range parts {
+		parts[i] = prefix + strings.TrimSpace(c)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // upsertUserTx finds a user by phone or creates one, returning the user id.

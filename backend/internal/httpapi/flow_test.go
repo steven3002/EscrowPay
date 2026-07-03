@@ -19,6 +19,20 @@ type createResp struct {
 	Tokens           map[string]string `json:"tokens"`
 }
 
+// cast is the standard set of signed-in accounts driving a pocket's lifecycle.
+type cast struct {
+	vendor *actor
+	buyer  *actor
+}
+
+func stdCast(t *testing.T, e *testEnv) cast {
+	t.Helper()
+	return cast{
+		vendor: e.login(t, "+2348010000001", "Ada Stores"),
+		buyer:  e.login(t, "+2348020000002", "Bola Buyer"),
+	}
+}
+
 // vendorInitiatedP2P is the standard create request used across tests: a vendor
 // lists a ₦10,000 item with a ₦200 premium and a 24h inspection window.
 func vendorInitiatedP2P() map[string]any {
@@ -32,34 +46,30 @@ func vendorInitiatedP2P() map[string]any {
 		"premium_kobo":              20000,
 		"item_description":          "Nikon Z6 camera",
 		"category":                  "electronics",
-		"creator": map[string]any{
-			"phone":        "+2348010000001",
-			"display_name": "Ada Stores",
-		},
 	}
 }
 
-// createPocket runs the create request and returns the parsed response.
-func createPocket(t *testing.T, e *testEnv, body map[string]any) createResp {
+// createPocket runs the create request as the given signed-in creator and
+// returns the parsed response.
+func createPocket(t *testing.T, e *testEnv, creator *actor, body map[string]any) createResp {
 	t.Helper()
-	status, data := e.req(t, "POST", "/api/pockets", "", body)
+	status, data := e.reqAs(t, creator, "POST", "/api/pockets", "", body)
 	if status != 201 {
 		t.Fatalf("create: status %d, body %s", status, data)
 	}
 	return decode[createResp](t, data)
 }
 
-// claimAndAccept has the buyer claim their role and accept, supplying a delivery
-// address. It returns after transition #1 has fired.
-func claimAndAccept(t *testing.T, e *testEnv, cr createResp) {
+// claimAndAccept has the signed-in buyer claim their seat via the share link's
+// token and accept, supplying a delivery address. It returns after transition
+// #1 has fired.
+func claimAndAccept(t *testing.T, e *testEnv, buyer *actor, cr createResp) {
 	t.Helper()
 	buyerToken := cr.Tokens["buyer"]
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/claim", buyerToken, map[string]any{
-		"phone": "+2348020000002", "display_name": "Bola Buyer",
-	}); status != 200 {
+	if status, data := e.reqAs(t, buyer, "POST", "/api/p/"+cr.ShortCode+"/claim", buyerToken, map[string]any{}); status != 200 {
 		t.Fatalf("claim: status %d, body %s", status, data)
 	}
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", buyerToken, map[string]any{
+	if status, data := e.reqAs(t, buyer, "POST", "/api/p/"+cr.ShortCode+"/accept", buyerToken, map[string]any{
 		"delivery_address": "14 Marina Road, Lagos",
 	}); status != 200 {
 		t.Fatalf("accept: status %d, body %s", status, data)
@@ -68,7 +78,8 @@ func claimAndAccept(t *testing.T, e *testEnv, cr createResp) {
 
 func TestHappyPathToFundedAndCodeFetch(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, vendorInitiatedP2P())
+	c := stdCast(t, e)
+	cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
 
 	if cr.CounterpartyRole != "buyer" {
 		t.Fatalf("counterparty role = %q, want buyer", cr.CounterpartyRole)
@@ -77,11 +88,10 @@ func TestHappyPathToFundedAndCodeFetch(t *testing.T) {
 		t.Fatalf("expected both role tokens, got %+v", cr.Tokens)
 	}
 
-	claimAndAccept(t, e, cr)
+	claimAndAccept(t, e, c.buyer, cr)
 
 	// After acceptance the pocket is CREATED with a funding link visible to buyer.
-	buyerToken := cr.Tokens["buyer"]
-	status, data := e.req(t, "GET", "/api/p/"+cr.ShortCode, buyerToken, nil)
+	status, data := e.reqAs(t, c.buyer, "GET", "/api/p/"+cr.ShortCode, "", nil)
 	if status != 200 {
 		t.Fatalf("buyer view: status %d, body %s", status, data)
 	}
@@ -103,7 +113,7 @@ func TestHappyPathToFundedAndCodeFetch(t *testing.T) {
 	}
 
 	// Buyer fetches the plaintext Release Code.
-	status, data = e.req(t, "GET", "/api/pockets/"+cr.PocketID+"/release-code", buyerToken, nil)
+	status, data = e.reqAs(t, c.buyer, "GET", "/api/pockets/"+cr.PocketID+"/release-code", "", nil)
 	if status != 200 {
 		t.Fatalf("release-code: status %d, body %s", status, data)
 	}
@@ -115,7 +125,7 @@ func TestHappyPathToFundedAndCodeFetch(t *testing.T) {
 	}
 
 	// A second fetch returns the same code (encrypted-at-rest, not regenerated).
-	_, data2 := e.req(t, "GET", "/api/pockets/"+cr.PocketID+"/release-code", buyerToken, nil)
+	_, data2 := e.reqAs(t, c.buyer, "GET", "/api/pockets/"+cr.PocketID+"/release-code", "", nil)
 	if got := decode[struct {
 		ReleaseCode string `json:"release_code"`
 	}](t, data2).ReleaseCode; got != code {
@@ -156,15 +166,13 @@ func TestHappyPathToFundedAndCodeFetch(t *testing.T) {
 
 func TestReleaseCodeNeverLeaksToVendorOrLogs(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, vendorInitiatedP2P())
-	claimAndAccept(t, e, cr)
+	c := stdCast(t, e)
+	cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
+	claimAndAccept(t, e, c.buyer, cr)
 	e.req(t, "POST", "/api/demo/pockets/"+cr.PocketID+"/simulate-funding", "", nil)
 
-	buyerToken := cr.Tokens["buyer"]
-	vendorToken := cr.Tokens["vendor"]
-
 	// The buyer can read the code.
-	_, data := e.req(t, "GET", "/api/pockets/"+cr.PocketID+"/release-code", buyerToken, nil)
+	_, data := e.reqAs(t, c.buyer, "GET", "/api/pockets/"+cr.PocketID+"/release-code", "", nil)
 	code := decode[struct {
 		ReleaseCode string `json:"release_code"`
 	}](t, data).ReleaseCode
@@ -173,16 +181,17 @@ func TestReleaseCodeNeverLeaksToVendorOrLogs(t *testing.T) {
 	}
 
 	// The vendor cannot: the buyer-only endpoint is forbidden to them.
-	if status, _ := e.req(t, "GET", "/api/pockets/"+cr.PocketID+"/release-code", vendorToken, nil); status != 403 {
+	if status, _ := e.reqAs(t, c.vendor, "GET", "/api/pockets/"+cr.PocketID+"/release-code", "", nil); status != 403 {
 		t.Fatalf("vendor release-code status = %d, want 403", status)
 	}
 
 	// The code appears in no vendor-facing response body.
-	_, vendorView := e.req(t, "GET", "/api/p/"+cr.ShortCode, vendorToken, nil)
+	_, vendorView := e.reqAs(t, c.vendor, "GET", "/api/p/"+cr.ShortCode, "", nil)
 	if strings.Contains(string(vendorView), code) || strings.Contains(string(vendorView), "release_code") {
 		t.Fatalf("vendor view leaked the release code: %s", vendorView)
 	}
-	_, adminView := e.req(t, "GET", "/api/admin/pockets/"+cr.PocketID, "", nil)
+	admin := e.loginAdmin(t)
+	_, adminView := e.reqAs(t, admin, "GET", "/api/admin/pockets/"+cr.PocketID, "", nil)
 	if strings.Contains(string(adminView), code) {
 		t.Fatalf("admin view leaked the release code: %s", adminView)
 	}
@@ -195,12 +204,13 @@ func TestReleaseCodeNeverLeaksToVendorOrLogs(t *testing.T) {
 
 func TestRoleScopedMoneyVisibility(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, vendorInitiatedP2P())
-	claimAndAccept(t, e, cr)
+	c := stdCast(t, e)
+	cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
+	claimAndAccept(t, e, c.buyer, cr)
 	e.req(t, "POST", "/api/demo/pockets/"+cr.PocketID+"/simulate-funding", "", nil)
 
 	// Buyer sees the total they paid, not the vendor's allocation or premium.
-	_, buyerData := e.req(t, "GET", "/api/p/"+cr.ShortCode, cr.Tokens["buyer"], nil)
+	_, buyerData := e.reqAs(t, c.buyer, "GET", "/api/p/"+cr.ShortCode, "", nil)
 	buyerMoney := decode[map[string]any](t, buyerData)["money"].(map[string]any)
 	if _, ok := buyerMoney["buyer_total_kobo"]; !ok {
 		t.Fatal("buyer must see buyer_total_kobo")
@@ -210,7 +220,7 @@ func TestRoleScopedMoneyVisibility(t *testing.T) {
 	}
 
 	// Vendor sees their allocation, never the buyer total or premium.
-	_, vendorData := e.req(t, "GET", "/api/p/"+cr.ShortCode, cr.Tokens["vendor"], nil)
+	_, vendorData := e.reqAs(t, c.vendor, "GET", "/api/p/"+cr.ShortCode, "", nil)
 	vendorView := decode[map[string]any](t, vendorData)
 	vendorMoney := vendorView["money"].(map[string]any)
 	if _, ok := vendorMoney["amount_kobo"]; !ok {
@@ -231,11 +241,12 @@ func TestRoleScopedMoneyVisibility(t *testing.T) {
 
 func TestDoubleAcceptRejected(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, vendorInitiatedP2P())
-	claimAndAccept(t, e, cr) // fires #1
+	c := stdCast(t, e)
+	cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
+	claimAndAccept(t, e, c.buyer, cr) // fires #1
 
 	// A second accept on an already-created pocket is rejected.
-	status, _ := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", cr.Tokens["buyer"], map[string]any{})
+	status, _ := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/accept", "", map[string]any{})
 	if status != 409 {
 		t.Fatalf("second accept status = %d, want 409", status)
 	}
@@ -243,13 +254,11 @@ func TestDoubleAcceptRejected(t *testing.T) {
 
 func TestConcurrentAcceptLeavesOneWinner(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, vendorInitiatedP2P())
+	c := stdCast(t, e)
+	cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
 
 	// Buyer claims first, then two accept requests race.
-	buyerToken := cr.Tokens["buyer"]
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/claim", buyerToken, map[string]any{
-		"phone": "+2348020000002", "display_name": "Bola Buyer",
-	}); status != 200 {
+	if status, data := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/claim", cr.Tokens["buyer"], map[string]any{}); status != 200 {
 		t.Fatalf("claim: %d %s", status, data)
 	}
 
@@ -260,7 +269,7 @@ func TestConcurrentAcceptLeavesOneWinner(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			status, _ := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/accept", buyerToken, map[string]any{})
+			status, _ := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/accept", "", map[string]any{})
 			statuses[idx] = status
 		}(i)
 	}
@@ -294,9 +303,10 @@ func TestConcurrentAcceptLeavesOneWinner(t *testing.T) {
 func TestCancelDraftAndCreatedAndFunded(t *testing.T) {
 	t.Run("draft", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := createPocket(t, e, vendorInitiatedP2P())
+		c := stdCast(t, e)
+		cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
 		// Vendor cancels the still-unaccepted draft.
-		status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/cancel", cr.Tokens["vendor"], nil)
+		status, data := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/cancel", "", nil)
 		if status != 200 {
 			t.Fatalf("cancel draft: %d %s", status, data)
 		}
@@ -307,9 +317,10 @@ func TestCancelDraftAndCreatedAndFunded(t *testing.T) {
 
 	t.Run("created (#4)", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := createPocket(t, e, vendorInitiatedP2P())
-		claimAndAccept(t, e, cr) // -> CREATED
-		status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/cancel", cr.Tokens["buyer"], nil)
+		c := stdCast(t, e)
+		cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
+		claimAndAccept(t, e, c.buyer, cr) // -> CREATED
+		status, data := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/cancel", "", nil)
 		if status != 200 {
 			t.Fatalf("cancel created: %d %s", status, data)
 		}
@@ -320,16 +331,17 @@ func TestCancelDraftAndCreatedAndFunded(t *testing.T) {
 
 	t.Run("funded (#5 vendor refund)", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := createPocket(t, e, vendorInitiatedP2P())
-		claimAndAccept(t, e, cr)
+		c := stdCast(t, e)
+		cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
+		claimAndAccept(t, e, c.buyer, cr)
 		e.req(t, "POST", "/api/demo/pockets/"+cr.PocketID+"/simulate-funding", "", nil)
 
 		// A buyer may not cancel a funded pocket; only the vendor triggers #5.
-		if status, _ := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/cancel", cr.Tokens["buyer"], nil); status != 403 {
+		if status, _ := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/cancel", "", nil); status != 403 {
 			t.Fatalf("buyer cancel of funded pocket status = %d, want 403", status)
 		}
 
-		status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/cancel", cr.Tokens["vendor"], nil)
+		status, data := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/cancel", "", nil)
 		if status != 200 {
 			t.Fatalf("vendor cancel funded: %d %s", status, data)
 		}
@@ -354,11 +366,12 @@ func TestCancelDraftAndCreatedAndFunded(t *testing.T) {
 
 func TestUnauthorizedAndForbidden(t *testing.T) {
 	e := newTestEnv(t)
-	cr := createPocket(t, e, vendorInitiatedP2P())
+	c := stdCast(t, e)
+	cr := createPocket(t, e, c.vendor, vendorInitiatedP2P())
 
-	// No token.
+	// No token and no session.
 	if status, _ := e.req(t, "GET", "/api/p/"+cr.ShortCode, "", nil); status != 401 {
-		t.Fatalf("missing token status = %d, want 401", status)
+		t.Fatalf("missing credential status = %d, want 401", status)
 	}
 	// A token minted for a different pocket must not authorize this one.
 	foreign, _, err := e.minter.Mint("00000000-0000-0000-0000-000000000000", "buyer")
@@ -369,7 +382,7 @@ func TestUnauthorizedAndForbidden(t *testing.T) {
 		t.Fatalf("foreign token status = %d, want 403", status)
 	}
 	// Unknown short code is a 404.
-	if status, _ := e.req(t, "GET", "/api/p/"+fmt.Sprintf("nope%d", 1), cr.Tokens["buyer"], nil); status != 404 {
+	if status, _ := e.reqAs(t, c.buyer, "GET", "/api/p/"+fmt.Sprintf("nope%d", 1), cr.Tokens["buyer"], nil); status != 404 {
 		t.Fatalf("unknown short code status = %d, want 404", status)
 	}
 }

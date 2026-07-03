@@ -29,18 +29,18 @@ type disputeResp struct {
 }
 
 // deliveredPocket takes a cooldown pocket to DELIVERED_PENDING via a valid code.
-func deliveredPocket(t *testing.T, e *testEnv) createResp {
+func deliveredPocket(t *testing.T, e *testEnv, c cast) createResp {
 	t.Helper()
-	cr := fundPocket(t, e, vendorInitiatedP2P())
-	code := releaseCodeOf(t, e, cr)
-	if _, res := enterCode(t, e, cr, code); res.State != "DELIVERED_PENDING" {
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
+	code := releaseCodeOf(t, e, c, cr)
+	if _, res := enterCode(t, e, c, cr, code); res.State != "DELIVERED_PENDING" {
 		t.Fatalf("precondition state = %s, want DELIVERED_PENDING", res.State)
 	}
 	return cr
 }
 
 // uploadEvidence posts a multipart evidence file as the given participant.
-func uploadEvidence(t *testing.T, e *testEnv, cr createResp, token, evType, filename string, content []byte) (int, evidenceResp) {
+func uploadEvidence(t *testing.T, e *testEnv, ac *actor, cr createResp, evType, filename string, content []byte) (int, evidenceResp) {
 	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -62,7 +62,7 @@ func uploadEvidence(t *testing.T, e *testEnv, cr createResp, token, evType, file
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("X-Link-Token", token)
+	req.AddCookie(ac.cookie)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -80,9 +80,9 @@ func uploadEvidence(t *testing.T, e *testEnv, cr createResp, token, evType, file
 	return resp.StatusCode, ev
 }
 
-func disputeOf(t *testing.T, e *testEnv, cr createResp, token string) disputeResp {
+func disputeOf(t *testing.T, e *testEnv, ac *actor, cr createResp) disputeResp {
 	t.Helper()
-	_, data := e.req(t, "GET", "/api/p/"+cr.ShortCode+"/dispute", token, nil)
+	_, data := e.reqAs(t, ac, "GET", "/api/p/"+cr.ShortCode+"/dispute", "", nil)
 	return decode[disputeResp](t, data)
 }
 
@@ -103,19 +103,20 @@ func userStrikes(t *testing.T, pocketID, role string) int {
 // refunding exactly once.
 func TestReportEvidenceConcession(t *testing.T) {
 	e := newTestEnv(t)
-	cr := deliveredPocket(t, e)
+	c := stdCast(t, e)
+	cr := deliveredPocket(t, e, c)
 
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/report-issue", cr.Tokens["buyer"], nil); status != 200 {
+	if status, data := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/report-issue", "", nil); status != 200 {
 		t.Fatalf("report-issue: %d %s", status, data)
 	}
 
-	d := disputeOf(t, e, cr, cr.Tokens["buyer"])
+	d := disputeOf(t, e, c.buyer, cr)
 	if d.Class != "not_as_described" || d.State != "open" {
 		t.Fatalf("dispute = %+v, want not_as_described/open", d)
 	}
 
 	// Buyer records an unboxing video at handoff time — inside the window.
-	status, ev := uploadEvidence(t, e, cr, cr.Tokens["buyer"], "unboxing_video", "unbox.mp4", []byte("video-bytes"))
+	status, ev := uploadEvidence(t, e, c.buyer, cr, "unboxing_video", "unbox.mp4", []byte("video-bytes"))
 	if status != 201 {
 		t.Fatalf("evidence upload status = %d", status)
 	}
@@ -124,10 +125,10 @@ func TestReportEvidenceConcession(t *testing.T) {
 	}
 
 	// The vendor concedes; the buyer is refunded.
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/concede", cr.Tokens["vendor"], nil); status != 200 {
+	if status, data := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/concede", "", nil); status != 200 {
 		t.Fatalf("concede: %d %s", status, data)
 	}
-	if got := stateOf(t, e, cr); got != "REFUNDED" {
+	if got := stateOf(t, e, c, cr); got != "REFUNDED" {
 		t.Fatalf("state = %s, want REFUNDED", got)
 	}
 
@@ -138,12 +139,12 @@ func TestReportEvidenceConcession(t *testing.T) {
 	if n := countCalls(e.gateway.Calls(), "Refund"); n != 1 {
 		t.Fatalf("refund calls = %d, want 1", n)
 	}
-	if status, _ := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/concede", cr.Tokens["vendor"], nil); status != 409 {
+	if status, _ := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/concede", "", nil); status != 409 {
 		t.Fatalf("second concede status = %d, want 409", status)
 	}
 
 	// The dispute is now recorded as resolved by refund.
-	d = disputeOf(t, e, cr, cr.Tokens["buyer"])
+	d = disputeOf(t, e, c.buyer, cr)
 	if d.State != "resolved" || d.Resolution != "refund" {
 		t.Fatalf("resolved dispute = %+v, want resolved/refund", d)
 	}
@@ -157,9 +158,10 @@ func TestReportEvidenceConcession(t *testing.T) {
 func TestEvidenceWindowEnforcement(t *testing.T) {
 	t.Run("within window", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := deliveredPocket(t, e)
+		c := stdCast(t, e)
+		cr := deliveredPocket(t, e, c)
 		e.clock.advance(30 * time.Minute)
-		_, ev := uploadEvidence(t, e, cr, cr.Tokens["buyer"], "unboxing_video", "unbox.mp4", []byte("v"))
+		_, ev := uploadEvidence(t, e, c.buyer, cr, "unboxing_video", "unbox.mp4", []byte("v"))
 		if ev.WithinWindow == nil || !*ev.WithinWindow {
 			t.Fatalf("within_window = %v, want true at +30m", ev.WithinWindow)
 		}
@@ -167,9 +169,10 @@ func TestEvidenceWindowEnforcement(t *testing.T) {
 
 	t.Run("past window", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := deliveredPocket(t, e)
+		c := stdCast(t, e)
+		cr := deliveredPocket(t, e, c)
 		e.clock.advance(61 * time.Minute)
-		_, ev := uploadEvidence(t, e, cr, cr.Tokens["buyer"], "unboxing_video", "unbox.mp4", []byte("v"))
+		_, ev := uploadEvidence(t, e, c.buyer, cr, "unboxing_video", "unbox.mp4", []byte("v"))
 		if ev.WithinWindow == nil || *ev.WithinWindow {
 			t.Fatalf("within_window = %v, want false at +61m", ev.WithinWindow)
 		}
@@ -181,22 +184,24 @@ func TestEvidenceWindowEnforcement(t *testing.T) {
 // (#14) refunds the buyer and strikes the vendor.
 func TestFrozenDisputeThenAdminForceRefund(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, vendorInitiatedP2P())
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
 	e.clock.advance(2881 * time.Minute)
 	e.tick(t) // -> FROZEN
 
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/dispute", cr.Tokens["buyer"], nil); status != 200 {
+	if status, data := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/dispute", "", nil); status != 200 {
 		t.Fatalf("dispute: %d %s", status, data)
 	}
-	if got := stateOf(t, e, cr); got != "DISPUTED" {
+	if got := stateOf(t, e, c, cr); got != "DISPUTED" {
 		t.Fatalf("state = %s, want DISPUTED", got)
 	}
-	if d := disputeOf(t, e, cr, cr.Tokens["buyer"]); d.Class != "not_delivered" {
+	if d := disputeOf(t, e, c.buyer, cr); d.Class != "not_delivered" {
 		t.Fatalf("class = %s, want not_delivered", d.Class)
 	}
 
 	// The dispute is on the admin arbitration queue.
-	_, qdata := e.req(t, "GET", "/api/admin/disputes", "", nil)
+	admin := e.loginAdmin(t)
+	_, qdata := e.reqAs(t, admin, "GET", "/api/admin/disputes", "", nil)
 	queue := decode[struct {
 		Disputes []struct {
 			PocketID string `json:"pocket_id"`
@@ -208,10 +213,10 @@ func TestFrozenDisputeThenAdminForceRefund(t *testing.T) {
 	}
 
 	// Admin rules for the buyer and flags the vendor.
-	if status, data := e.req(t, "POST", "/api/admin/pockets/"+cr.PocketID+"/force-refund", "", nil); status != 200 {
+	if status, data := e.reqAs(t, admin, "POST", "/api/admin/pockets/"+cr.PocketID+"/force-refund", "", nil); status != 200 {
 		t.Fatalf("force-refund: %d %s", status, data)
 	}
-	if got := stateOf(t, e, cr); got != "REFUNDED" {
+	if got := stateOf(t, e, c, cr); got != "REFUNDED" {
 		t.Fatalf("state = %s, want REFUNDED", got)
 	}
 	if n := countCalls(e.gateway.Calls(), "Refund"); n != 1 {
@@ -221,7 +226,7 @@ func TestFrozenDisputeThenAdminForceRefund(t *testing.T) {
 		t.Fatalf("vendor strikes = %d, want 1 (fraud flag)", s)
 	}
 	// The queue is empty once resolved.
-	_, qdata = e.req(t, "GET", "/api/admin/disputes", "", nil)
+	_, qdata = e.reqAs(t, admin, "GET", "/api/admin/disputes", "", nil)
 	if q := decode[struct {
 		Disputes []json.RawMessage `json:"disputes"`
 	}](t, qdata); len(q.Disputes) != 0 {
@@ -233,15 +238,17 @@ func TestFrozenDisputeThenAdminForceRefund(t *testing.T) {
 // strikes the bad-faith buyer.
 func TestAdminForcePayoutBadFaith(t *testing.T) {
 	e := newTestEnv(t)
-	cr := deliveredPocket(t, e)
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/report-issue", cr.Tokens["buyer"], nil); status != 200 {
+	c := stdCast(t, e)
+	cr := deliveredPocket(t, e, c)
+	if status, data := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/report-issue", "", nil); status != 200 {
 		t.Fatalf("report-issue: %d %s", status, data)
 	}
 
-	if status, data := e.req(t, "POST", "/api/admin/pockets/"+cr.PocketID+"/force-payout", "", map[string]any{"bad_faith": true}); status != 200 {
+	admin := e.loginAdmin(t)
+	if status, data := e.reqAs(t, admin, "POST", "/api/admin/pockets/"+cr.PocketID+"/force-payout", "", map[string]any{"bad_faith": true}); status != 200 {
 		t.Fatalf("force-payout: %d %s", status, data)
 	}
-	if got := stateOf(t, e, cr); got != "SETTLED" {
+	if got := stateOf(t, e, c, cr); got != "SETTLED" {
 		t.Fatalf("state = %s, want SETTLED", got)
 	}
 	if n := countCalls(e.gateway.Calls(), "Payout"); n != 1 {
@@ -257,24 +264,40 @@ func TestAdminForcePayoutBadFaith(t *testing.T) {
 func TestDisputeAuthorization(t *testing.T) {
 	t.Run("buyer cannot concede", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := deliveredPocket(t, e)
-		e.req(t, "POST", "/api/p/"+cr.ShortCode+"/report-issue", cr.Tokens["buyer"], nil)
-		if status, _ := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/concede", cr.Tokens["buyer"], nil); status != 403 {
+		c := stdCast(t, e)
+		cr := deliveredPocket(t, e, c)
+		e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/report-issue", "", nil)
+		if status, _ := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/concede", "", nil); status != 403 {
 			t.Fatalf("buyer concede status = %d, want 403", status)
 		}
 	})
 
-	t.Run("admin surface closed outside sandbox", func(t *testing.T) {
-		e := newEnv(t, false)
+	t.Run("admin surface requires an admin account", func(t *testing.T) {
+		e := newEnv(t, envOptions{sandbox: false})
 		id := "00000000-0000-0000-0000-000000000000"
-		if status, _ := e.req(t, "GET", "/api/admin/disputes", "", nil); status != 403 {
-			t.Fatalf("dispute queue status = %d, want 403", status)
+
+		// Anonymous callers are asked to sign in.
+		if status, _ := e.req(t, "GET", "/api/admin/disputes", "", nil); status != 401 {
+			t.Fatalf("anonymous dispute queue status = %d, want 401", status)
 		}
-		if status, _ := e.req(t, "POST", "/api/admin/pockets/"+id+"/force-refund", "", nil); status != 403 {
-			t.Fatalf("force-refund status = %d, want 403", status)
+		// Outside sandbox the demo login is closed, so no admin can be minted.
+		if status, _ := e.req(t, "POST", "/api/auth/demo", "", map[string]any{"phone": "+2348000000000", "admin": true}); status != 403 {
+			t.Fatalf("demo login outside sandbox status = %d, want 403", status)
 		}
-		if status, _ := e.req(t, "POST", "/api/admin/pockets/"+id+"/force-payout", "", nil); status != 403 {
-			t.Fatalf("force-payout status = %d, want 403", status)
+		// A signed-in non-admin is refused.
+		u, err := e.store.UpsertUserByPhone(context.Background(), "+2348011111111", "Plain User")
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain := e.sessionFor(t, u.ID)
+		if status, _ := e.reqAs(t, plain, "GET", "/api/admin/disputes", "", nil); status != 403 {
+			t.Fatalf("non-admin dispute queue status = %d, want 403", status)
+		}
+		if status, _ := e.reqAs(t, plain, "POST", "/api/admin/pockets/"+id+"/force-refund", "", nil); status != 403 {
+			t.Fatalf("non-admin force-refund status = %d, want 403", status)
+		}
+		if status, _ := e.reqAs(t, plain, "POST", "/api/admin/pockets/"+id+"/force-payout", "", nil); status != 403 {
+			t.Fatalf("non-admin force-payout status = %d, want 403", status)
 		}
 	})
 }

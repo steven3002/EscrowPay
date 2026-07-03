@@ -17,11 +17,11 @@ import (
 type TokenMinter func(pocketID, role string) (token, hash string, err error)
 
 // CreatorInput identifies the participant who authored a pocket. Their
-// acceptance is implicit at creation.
+// acceptance is implicit at creation. UserID must reference an existing
+// account: pockets are always authored by an authenticated user.
 type CreatorInput struct {
-	Role        pocket.Role
-	Phone       string
-	DisplayName string
+	Role   pocket.Role
+	UserID string
 }
 
 // CreateResult reports a newly created draft: its identity and the raw link
@@ -59,10 +59,6 @@ func (s *Store) CreatePocket(ctx context.Context, draft PocketDraft, creator Cre
 		if err != nil {
 			return err
 		}
-		creatorUserID, err := upsertUserTx(ctx, tx, creator.Phone, creator.DisplayName)
-		if err != nil {
-			return err
-		}
 		for _, role := range roles {
 			token, hash, err := mint(id, string(role))
 			if err != nil {
@@ -71,7 +67,7 @@ func (s *Store) CreatePocket(ctx context.Context, draft PocketDraft, creator Cre
 			var userID *string
 			var acceptedAt *time.Time
 			if role == creator.Role {
-				uid := creatorUserID
+				uid := creator.UserID
 				at := now
 				userID, acceptedAt = &uid, &at
 			}
@@ -89,10 +85,11 @@ func (s *Store) CreatePocket(ctx context.Context, draft PocketDraft, creator Cre
 	return res, nil
 }
 
-// Claim binds a user (found or created by phone) to a role, provided the pocket
-// is still a draft and the role is unclaimed. Re-claiming by the same user is a
-// no-op; a different user is rejected.
-func (s *Store) Claim(ctx context.Context, pocketID, role, phone, displayName string) error {
+// Claim binds an authenticated user to a role, provided the pocket is still a
+// draft and the role is unclaimed. Re-claiming by the same user is a no-op; a
+// different user is rejected, as is a user who already holds another role in
+// the pocket.
+func (s *Store) Claim(ctx context.Context, pocketID, role, userID string) error {
 	return s.withTx(ctx, func(tx pgx.Tx) error {
 		rec, err := s.selectPocketForUpdateTx(ctx, tx, pocketID)
 		if err != nil {
@@ -100,10 +97,6 @@ func (s *Store) Claim(ctx context.Context, pocketID, role, phone, displayName st
 		}
 		if !rec.IsDraft() {
 			return ErrIllegalState
-		}
-		userID, err := upsertUserTx(ctx, tx, phone, displayName)
-		if err != nil {
-			return err
 		}
 		return claimParticipantTx(ctx, tx, pocketID, role, userID)
 	})

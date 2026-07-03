@@ -52,6 +52,12 @@ func (a *App) Detail(ctx context.Context, pocketID string) (store.PocketRecord, 
 	return rec, parts, events, nil
 }
 
+// MyPockets returns every pocket the user participates in, newest first, with
+// the user's role in each — the cross-role dashboard feed.
+func (a *App) MyPockets(ctx context.Context, userID string) ([]store.UserPocket, error) {
+	return a.store.PocketsForUser(ctx, userID, 0)
+}
+
 // ReleaseCode decrypts and returns the buyer's plaintext Release Code. It is the
 // only path by which the plaintext leaves the server; the caller must have
 // already authenticated the request as the buyer.

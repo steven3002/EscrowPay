@@ -3,8 +3,9 @@ package pocket
 import "time"
 
 // Effect is a side effect a transition asks the caller to perform. Effects are
-// inert data: the domain never executes them. Later scopes (persistence, HTTP,
-// settlement) interpret each Effect and drive the gateway, notifier, or store.
+// inert data: the domain never executes them. The outer layers (persistence,
+// HTTP, settlement) interpret each Effect and drive the gateway, notifier, or
+// store.
 type Effect interface {
 	isEffect()
 }

@@ -17,7 +17,7 @@ type SettlementLeg struct {
 	PocketID        string
 	Direction       string // "payout" | "refund"
 	BeneficiaryRole string // "vendor" | "broker" | "buyer"
-	BeneficiaryUser string // optional; empty until a payout account is linked (s8)
+	BeneficiaryUser string // optional; empty until a payout account is linked
 	AmountKobo      int64
 	IdempotencyKey  string
 }

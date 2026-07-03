@@ -39,7 +39,13 @@ func (a *API) writeError(w http.ResponseWriter, err error) {
 func classify(err error) (int, string) {
 	switch {
 	case errors.Is(err, errUnauthorized):
-		return http.StatusUnauthorized, "missing or invalid link token"
+		return http.StatusUnauthorized, "sign in or use a valid pocket link"
+	case errors.Is(err, errNoAccount):
+		return http.StatusUnauthorized, "sign in required"
+	case errors.Is(err, errRateLimited):
+		return http.StatusTooManyRequests, "too many requests; slow down and retry"
+	case errors.Is(err, errAuthUnavailable):
+		return http.StatusServiceUnavailable, "this sign-in method is not configured"
 	case errors.Is(err, errForbidden), errors.Is(err, pocketapp.ErrForbidden):
 		return http.StatusForbidden, "not permitted for this role"
 	case errors.Is(err, store.ErrNotFound):
@@ -55,6 +61,7 @@ func classify(err error) (int, string) {
 		errors.Is(err, store.ErrAwaitingVendor),
 		errors.Is(err, store.ErrAlreadyAccepted),
 		errors.Is(err, store.ErrAlreadyClaimed),
+		errors.Is(err, store.ErrRoleConflict),
 		errors.Is(err, store.ErrNotClaimed),
 		errors.Is(err, pocket.ErrIllegalTransition),
 		errors.Is(err, pocket.ErrTerminal),
@@ -74,6 +81,12 @@ func messageOf(err error) string {
 
 // errBadRequest tags request-decoding failures for classify.
 var errBadRequest = errors.New("bad request")
+
+// errRateLimited tags requests rejected by a rate limiter.
+var errRateLimited = errors.New("rate limited")
+
+// errAuthUnavailable tags sign-in methods this deployment does not offer.
+var errAuthUnavailable = errors.New("auth method unavailable")
 
 // decodeJSON reads a required JSON body into dst, returning errBadRequest on
 // failure (including an empty body).

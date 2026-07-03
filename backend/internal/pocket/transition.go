@@ -8,8 +8,8 @@ import (
 )
 
 // EventKind enumerates the events that drive the state machine. Each maps to at
-// most one edge in the normative table (project-flow §4); EvCodeRejected mutates
-// attempt state without changing the pocket's state.
+// most one edge in the transition table (see the package documentation);
+// EvCodeRejected mutates attempt state without changing the pocket's state.
 type EventKind string
 
 const (
@@ -29,8 +29,8 @@ const (
 	EvAdminForcePayout       EventKind = "admin_force_payout"       // #15
 )
 
-// Notification kinds emitted by transitions. Later scopes map these to concrete
-// message copy per channel.
+// Notification kinds emitted by transitions. The notification layer maps these
+// to concrete message copy per channel.
 const (
 	NotifyFundsSecured         = "funds_secured"
 	NotifyDeliveryConfirmed    = "delivery_confirmed"

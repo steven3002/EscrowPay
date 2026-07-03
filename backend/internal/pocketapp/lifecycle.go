@@ -24,8 +24,7 @@ type CreateInput struct {
 	ItemDescription string
 	Category        string
 
-	CreatorPhone       string
-	CreatorDisplayName string
+	CreatorUserID string
 }
 
 // CreateOutput reports a created draft and the link tokens minted for it. For a
@@ -58,8 +57,8 @@ func (a *App) Create(ctx context.Context, in CreateInput) (CreateOutput, error) 
 	if err := pocket.ValidateSpec(spec); err != nil {
 		return CreateOutput{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	if in.CreatorPhone == "" {
-		return CreateOutput{}, fmt.Errorf("%w: creator phone is required", ErrInvalidInput)
+	if in.CreatorUserID == "" {
+		return CreateOutput{}, fmt.Errorf("%w: creator account is required", ErrInvalidInput)
 	}
 	if in.ItemDescription == "" {
 		return CreateOutput{}, fmt.Errorf("%w: item description is required", ErrInvalidInput)
@@ -77,7 +76,7 @@ func (a *App) Create(ctx context.Context, in CreateInput) (CreateOutput, error) 
 		ItemDescription:  in.ItemDescription,
 		Category:         in.Category,
 	}
-	creator := store.CreatorInput{Role: in.CreatorRole, Phone: in.CreatorPhone, DisplayName: in.CreatorDisplayName}
+	creator := store.CreatorInput{Role: in.CreatorRole, UserID: in.CreatorUserID}
 
 	res, err := a.store.CreatePocket(ctx, draft, creator, participantRoles(in.Structure), a.now(), a.minter.Mint)
 	if err != nil {
@@ -92,12 +91,12 @@ func (a *App) Create(ctx context.Context, in CreateInput) (CreateOutput, error) 
 	}, nil
 }
 
-// Claim binds the caller (identified by phone) to a role on a draft pocket.
-func (a *App) Claim(ctx context.Context, pocketID string, role pocket.Role, phone, displayName string) error {
-	if phone == "" {
-		return fmt.Errorf("%w: phone is required to claim", ErrInvalidInput)
+// Claim binds the caller's account to a role on a draft pocket.
+func (a *App) Claim(ctx context.Context, pocketID string, role pocket.Role, userID string) error {
+	if userID == "" {
+		return fmt.Errorf("%w: an account is required to claim", ErrInvalidInput)
 	}
-	return a.store.Claim(ctx, pocketID, string(role), phone, displayName)
+	return a.store.Claim(ctx, pocketID, string(role), userID)
 }
 
 // Accept records a role's acceptance. When it completes the participant set it
@@ -147,7 +146,7 @@ func (a *App) Cancel(ctx context.Context, pocketID string, actorRole pocket.Role
 
 func counterpartyRole(structure pocket.Structure, creator pocket.Role) pocket.Role {
 	if structure != pocket.StructureP2P {
-		return "" // brokered pockets have two counterparties; s7 handles them
+		return "" // a brokered pocket has two counterparties, not one
 	}
 	if creator == pocket.RoleVendor {
 		return pocket.RoleBuyer

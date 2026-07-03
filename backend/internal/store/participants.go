@@ -87,7 +87,9 @@ func participantsTx(ctx context.Context, tx pgx.Tx, pocketID string) ([]Particip
 }
 
 // claimParticipantTx binds userID to a role if it is unclaimed. Re-claiming by
-// the same user is idempotent; a different user is rejected.
+// the same user is idempotent; a different user is rejected, and a user who
+// already holds another role in the pocket is rejected (backed by a partial
+// unique index on (pocket_id, user_id)).
 func claimParticipantTx(ctx context.Context, tx pgx.Tx, pocketID, role, userID string) error {
 	existing, err := getParticipantTx(ctx, tx, pocketID, role)
 	if err != nil {
@@ -98,6 +100,15 @@ func claimParticipantTx(ctx context.Context, tx pgx.Tx, pocketID, role, userID s
 			return nil
 		}
 		return ErrAlreadyClaimed
+	}
+	parts, err := participantsTx(ctx, tx, pocketID)
+	if err != nil {
+		return err
+	}
+	for _, p := range parts {
+		if p.UserID == userID {
+			return ErrRoleConflict
+		}
 	}
 	_, err = tx.Exec(ctx,
 		`UPDATE pocket_participants SET user_id = $1, updated_at = now() WHERE pocket_id = $2 AND role = $3`,

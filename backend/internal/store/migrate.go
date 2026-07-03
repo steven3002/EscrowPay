@@ -1,5 +1,3 @@
-// Package store owns persistence: schema migrations now, repositories and the
-// transactional transition executor in later scopes.
 package store
 
 import (

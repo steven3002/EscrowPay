@@ -1,7 +1,31 @@
 // Package pocket is the escrow domain core: the Pocket aggregate and its
-// normative state machine (project-flow §4). It is pure — it performs no I/O and
-// imports no database, HTTP, or gateway package. Transitions return the next
-// Pocket snapshot plus a list of Effects for later scopes to execute.
+// normative state machine. It is pure — it performs no I/O and imports no
+// database, HTTP, or gateway package. Transitions return the next Pocket
+// snapshot plus a list of Effects for the application layer to execute.
+//
+// The state machine is exhaustive for both p2p and brokered structures; the
+// transition numbers (#1–#15) referenced throughout the codebase are:
+//
+//	#1  —                 → CREATED             pocket created, every participant accepted
+//	#2  CREATED           → FUNDED              funding confirmed; Release Code issued to the buyer
+//	#3  CREATED           → EXPIRED             funding window lapsed unpaid
+//	#4  CREATED           → CANCELLED           either party cancels before funding
+//	#5  FUNDED            → REFUNDED            vendor or mutual cancel after funding
+//	#6  FUNDED            → DELIVERED_PENDING   valid Release Code entered at handoff
+//	#7  FUNDED            → FROZEN              delivery deadline lapsed with no code
+//	#8  FROZEN            → DELIVERED_PENDING   valid code entered late
+//	#9  FROZEN            → REFUNDED            vendor confirms failure, or grace lapses with buyer attestation
+//	#10 FROZEN            → DISPUTED            parties disagree on delivery (not_delivered)
+//	#11 DELIVERED_PENDING → SETTLED             inspection window elapsed with no dispute
+//	#12 DELIVERED_PENDING → DISPUTED            buyer reports an issue in the window (not_as_described)
+//	#13 DISPUTED          → REFUNDED            vendor concedes
+//	#14 DISPUTED          → REFUNDED            admin force refund; vendor flagged for fraud
+//	#15 DISPUTED          → SETTLED             admin force payout; optional bad-faith strike on the buyer
+//
+// SETTLED, REFUNDED, CANCELLED and EXPIRED are terminal. Two invariants hold
+// everywhere: settlement to the vendor occurs only from DELIVERED_PENDING, and
+// no refund ever fires on a timer alone — a refund requires vendor concession,
+// buyer attestation after grace, admin action, or a pre-dispatch cancel.
 package pocket
 
 import (

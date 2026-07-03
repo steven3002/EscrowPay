@@ -8,10 +8,11 @@ import (
 )
 
 // pocketView is the role-scoped projection of a pocket. Money and counterparty
-// fields are populated strictly according to the visibility matrix
-// (project-flow §5a): what a role may not see is omitted from its JSON, never
-// zeroed. The Release Code appears in no view — it is served only by the
-// buyer-only endpoint.
+// fields are populated strictly per the visibility matrix — the buyer sees only
+// their total, the vendor only their allocation, the broker the full ledger —
+// and what a role may not see is omitted from its JSON, never zeroed. The
+// Release Code appears in no view — it is served only by the buyer-only
+// endpoint.
 type pocketView struct {
 	ID           string            `json:"id"`
 	ShortCode    string            `json:"short_code"`
@@ -76,7 +77,6 @@ func buildPocketView(rec store.PocketRecord, parts []store.ParticipantRecord, ro
 		YourRole:  role,
 		You:       viewerOf(parts, role),
 		Item:      itemView{Description: rec.ItemDescription, Category: rec.Category},
-		Money:     moneyView{Currency: "NGN"},
 		Timers: timersView{
 			DeliveryDeadline: timePtr(p.DeliveryDeadline),
 			SettleAfter:      timePtr(p.SettleAfter),
@@ -86,22 +86,15 @@ func buildPocketView(rec store.PocketRecord, parts []store.ParticipantRecord, ro
 		CreatedAt: rec.CreatedAt,
 	}
 
+	v.Money = roleMoney(p, role)
 	switch pocket.Role(role) {
 	case pocket.RoleBuyer:
-		v.Money.BuyerTotalKobo = int64Ptr(p.BuyerTotalKobo())
 		v.Counterparty = counterpartyOf(parts, sellerRole(p.Structure), false, rec.DeliveryAddress, p.State)
 		if p.State == pocket.StateCreated {
 			v.FundingURL = rec.FundingLinkURL
 		}
 	case pocket.RoleVendor:
-		v.Money.AmountKobo = int64Ptr(p.AmountKobo)
 		v.Counterparty = counterpartyOf(parts, pocket.RoleBuyer, true, rec.DeliveryAddress, p.State)
-	case pocket.RoleBroker:
-		// The broker sees the full ledger and both counterparties (s7 UI).
-		v.Money.BuyerTotalKobo = int64Ptr(p.BuyerTotalKobo())
-		v.Money.AmountKobo = int64Ptr(p.AmountKobo)
-		v.Money.CommissionKobo = int64Ptr(p.CommissionKobo)
-		v.Money.PremiumKobo = int64Ptr(p.PremiumKobo)
 	}
 	return v
 }

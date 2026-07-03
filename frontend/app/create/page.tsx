@@ -18,10 +18,13 @@ import {
 import { api, ApiError, type CreateResponse, type Role, type Structure } from "@/lib/api";
 import { formatKobo } from "@/lib/format";
 import { remember } from "@/lib/recent";
+import { useMe } from "@/lib/useMe";
+import { AppHeader } from "@/components/AppHeader";
 
 const CATEGORIES = ["electronics", "phones", "fashion", "beauty", "home", "general"];
 
 export default function CreatePage() {
+  const { user, known } = useMe();
   const [structure, setStructure] = useState<Structure>("p2p");
   const [creatorRole, setCreatorRole] = useState<Role>("vendor");
   const [item, setItem] = useState("");
@@ -32,8 +35,6 @@ export default function CreatePage() {
   const [mode, setMode] = useState<"cooldown" | "instant">("cooldown");
   const [inspectionHours, setInspectionHours] = useState("24");
   const [deliveryHours, setDeliveryHours] = useState("48");
-  const [phone, setPhone] = useState("");
-  const [displayName, setDisplayName] = useState("");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +55,6 @@ export default function CreatePage() {
     setError(null);
     if (!item.trim()) return setError("Describe the item.");
     if (amountKobo <= 0) return setError("Enter an amount.");
-    if (!phone.trim()) return setError("Your phone number is required.");
 
     setBusy(true);
     try {
@@ -69,7 +69,6 @@ export default function CreatePage() {
         premium_kobo: premiumKobo,
         item_description: item.trim(),
         category,
-        creator: { phone: phone.trim(), display_name: displayName.trim() },
       });
       const myToken = res.tokens[effectiveCreatorRole];
       if (myToken) {
@@ -93,9 +92,26 @@ export default function CreatePage() {
     return <ResultPanel result={result} brokered={brokered} creatorRole={effectiveCreatorRole} />;
   }
 
+  if (known && !user) {
+    return (
+      <Page>
+        <AppHeader user={user} known={known} next="/create" />
+        <Card>
+          <SectionTitle>New pocket</SectionTitle>
+          <p className="mb-4 text-sm text-muted">
+            Sign in first — the pocket is bound to your account, so only you can manage it.
+          </p>
+          <LinkButton href="/login?next=/create" tone="primary">
+            Sign in to continue
+          </LinkButton>
+        </Card>
+      </Page>
+    );
+  }
+
   return (
     <Page>
-      <BackLink />
+      <AppHeader user={user} known={known} next="/create" />
       <h1 className="mb-1 text-2xl font-bold">New pocket</h1>
       <p className="mb-6 text-sm text-muted">Set the terms every side will see.</p>
 
@@ -176,15 +192,6 @@ export default function CreatePage() {
           )}
           <Field label="Delivery window (hours)">
             <Input inputMode="numeric" value={deliveryHours} onChange={(e) => setDeliveryHours(e.target.value)} />
-          </Field>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Your phone">
-            <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+2348010000001" />
-          </Field>
-          <Field label="Your name">
-            <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Ada Stores" />
           </Field>
         </div>
 

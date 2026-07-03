@@ -1,7 +1,7 @@
 package pocket
 
 // State is a Pocket's position in the escrow lifecycle. The set is closed and
-// normative; see project-flow §4.
+// normative; see the transition table in the package documentation.
 type State string
 
 const (

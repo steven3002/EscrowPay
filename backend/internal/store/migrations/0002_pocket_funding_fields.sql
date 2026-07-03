@@ -6,8 +6,8 @@
 ALTER TABLE pockets ADD COLUMN delivery_window_minutes integer NOT NULL DEFAULT 0 CHECK (delivery_window_minutes >= 0);
 
 -- Funding-link artifact minted by the gateway when terms are accepted
--- (transition #1). Kept for audit and to surface a pay affordance; the real
--- adapter stores its virtual-account reference here in the payment scope.
+-- (transition #1). Kept for audit and to surface a pay affordance; a real bank
+-- adapter stores its virtual-account reference here.
 ALTER TABLE pockets ADD COLUMN funding_link_ref text;
 ALTER TABLE pockets ADD COLUMN funding_link_url text;
 

@@ -22,11 +22,12 @@ func instantP2P() map[string]any {
 	return m
 }
 
-// fundPocket takes a fresh pocket all the way to FUNDED.
-func fundPocket(t *testing.T, e *testEnv, body map[string]any) createResp {
+// fundPocket takes a fresh pocket all the way to FUNDED: the cast's vendor
+// creates it, the buyer claims and accepts, and the sandbox funds it.
+func fundPocket(t *testing.T, e *testEnv, c cast, body map[string]any) createResp {
 	t.Helper()
-	cr := createPocket(t, e, body)
-	claimAndAccept(t, e, cr)
+	cr := createPocket(t, e, c.vendor, body)
+	claimAndAccept(t, e, c.buyer, cr)
 	if status, data := e.req(t, "POST", "/api/demo/pockets/"+cr.PocketID+"/simulate-funding", "", nil); status != 200 {
 		t.Fatalf("simulate-funding: %d %s", status, data)
 	}
@@ -34,18 +35,18 @@ func fundPocket(t *testing.T, e *testEnv, body map[string]any) createResp {
 }
 
 // releaseCodeOf fetches the buyer's plaintext Release Code.
-func releaseCodeOf(t *testing.T, e *testEnv, cr createResp) string {
+func releaseCodeOf(t *testing.T, e *testEnv, c cast, cr createResp) string {
 	t.Helper()
-	_, data := e.req(t, "GET", "/api/pockets/"+cr.PocketID+"/release-code", cr.Tokens["buyer"], nil)
+	_, data := e.reqAs(t, c.buyer, "GET", "/api/pockets/"+cr.PocketID+"/release-code", "", nil)
 	return decode[struct {
 		ReleaseCode string `json:"release_code"`
 	}](t, data).ReleaseCode
 }
 
 // enterCode has the vendor submit a code and returns the decoded result.
-func enterCode(t *testing.T, e *testEnv, cr createResp, code string) (int, enterCodeResp) {
+func enterCode(t *testing.T, e *testEnv, c cast, cr createResp, code string) (int, enterCodeResp) {
 	t.Helper()
-	status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/enter-code", cr.Tokens["vendor"], map[string]any{"code": code})
+	status, data := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/enter-code", "", map[string]any{"code": code})
 	if status != 200 {
 		return status, enterCodeResp{}
 	}
@@ -60,9 +61,9 @@ type enterCodeResp struct {
 }
 
 // stateOf reads a pocket's current state through the buyer view.
-func stateOf(t *testing.T, e *testEnv, cr createResp) string {
+func stateOf(t *testing.T, e *testEnv, c cast, cr createResp) string {
 	t.Helper()
-	_, data := e.req(t, "GET", "/api/p/"+cr.ShortCode, cr.Tokens["buyer"], nil)
+	_, data := e.reqAs(t, c.buyer, "GET", "/api/p/"+cr.ShortCode, "", nil)
 	s, _ := decode[map[string]any](t, data)["state"].(string)
 	return s
 }
@@ -97,10 +98,11 @@ func settlementRowCount(t *testing.T, pocketID string) int {
 // then advances past the inspection window and lets the sweeper settle (#6, #11).
 func TestCodeEntryHappyPathSettles(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, vendorInitiatedP2P())
-	code := releaseCodeOf(t, e, cr)
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
+	code := releaseCodeOf(t, e, c, cr)
 
-	_, res := enterCode(t, e, cr, code)
+	_, res := enterCode(t, e, c, cr, code)
 	if !res.Accepted || res.State != "DELIVERED_PENDING" {
 		t.Fatalf("code entry = %+v, want accepted DELIVERED_PENDING", res)
 	}
@@ -114,7 +116,7 @@ func TestCodeEntryHappyPathSettles(t *testing.T) {
 	if rep := e.tick(t); rep.Settled != 1 {
 		t.Fatalf("sweep report = %+v, want 1 settled", rep)
 	}
-	if got := stateOf(t, e, cr); got != "SETTLED" {
+	if got := stateOf(t, e, c, cr); got != "SETTLED" {
 		t.Fatalf("state = %s, want SETTLED", got)
 	}
 
@@ -138,10 +140,11 @@ func TestCodeEntryHappyPathSettles(t *testing.T) {
 // synchronously at handoff, without waiting for a sweep.
 func TestInstantModeSettlesOnCodeEntry(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, instantP2P())
-	code := releaseCodeOf(t, e, cr)
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, instantP2P())
+	code := releaseCodeOf(t, e, c, cr)
 
-	_, res := enterCode(t, e, cr, code)
+	_, res := enterCode(t, e, c, cr, code)
 	if !res.Accepted || res.State != "SETTLED" {
 		t.Fatalf("instant code entry = %+v, want accepted SETTLED", res)
 	}
@@ -154,12 +157,13 @@ func TestInstantModeSettlesOnCodeEntry(t *testing.T) {
 // and that a correct code after lockout is rejected with 423.
 func TestCodeLockout(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, vendorInitiatedP2P())
-	code := releaseCodeOf(t, e, cr)
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
+	code := releaseCodeOf(t, e, c, cr)
 	bad := wrongCode(code)
 
 	for i := 1; i <= 5; i++ {
-		_, res := enterCode(t, e, cr, bad)
+		_, res := enterCode(t, e, c, cr, bad)
 		if res.Accepted {
 			t.Fatalf("attempt %d unexpectedly accepted", i)
 		}
@@ -178,10 +182,10 @@ func TestCodeLockout(t *testing.T) {
 	}
 
 	// A correct code after lockout is refused (423 Locked).
-	if status, _ := enterCode(t, e, cr, code); status != 423 {
+	if status, _ := enterCode(t, e, c, cr, code); status != 423 {
 		t.Fatalf("correct code after lockout status = %d, want 423", status)
 	}
-	if got := stateOf(t, e, cr); got != "FUNDED" {
+	if got := stateOf(t, e, c, cr); got != "FUNDED" {
 		t.Fatalf("state after lockout = %s, want FUNDED", got)
 	}
 }
@@ -190,21 +194,22 @@ func TestCodeLockout(t *testing.T) {
 // vendor-confirmed failure branch of #9 (immediate refund).
 func TestDeliveryDeadlineFreezeThenVendorRefund(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, vendorInitiatedP2P())
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
 
 	e.clock.advance(2881 * time.Minute) // past the 48h delivery window
 	if rep := e.tick(t); rep.Frozen != 1 {
 		t.Fatalf("sweep report = %+v, want 1 frozen", rep)
 	}
-	if got := stateOf(t, e, cr); got != "FROZEN" {
+	if got := stateOf(t, e, c, cr); got != "FROZEN" {
 		t.Fatalf("state = %s, want FROZEN", got)
 	}
 
 	// The vendor concedes the failed delivery; the buyer is refunded at once.
-	if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/confirm-dispatch-failure", cr.Tokens["vendor"], nil); status != 200 {
+	if status, data := e.reqAs(t, c.vendor, "POST", "/api/p/"+cr.ShortCode+"/confirm-dispatch-failure", "", nil); status != 200 {
 		t.Fatalf("confirm-dispatch-failure: %d %s", status, data)
 	}
-	if got := stateOf(t, e, cr); got != "REFUNDED" {
+	if got := stateOf(t, e, c, cr); got != "REFUNDED" {
 		t.Fatalf("state = %s, want REFUNDED", got)
 	}
 	var role string
@@ -225,7 +230,8 @@ func TestDeliveryDeadlineFreezeThenVendorRefund(t *testing.T) {
 func TestGraceRefundRequiresAttestation(t *testing.T) {
 	t.Run("no attestation stays frozen", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := fundPocket(t, e, vendorInitiatedP2P())
+		c := stdCast(t, e)
+		cr := fundPocket(t, e, c, vendorInitiatedP2P())
 		e.clock.advance(2881 * time.Minute)
 		e.tick(t) // -> FROZEN
 
@@ -233,7 +239,7 @@ func TestGraceRefundRequiresAttestation(t *testing.T) {
 		if rep := e.tick(t); rep.GraceRefunded != 0 {
 			t.Fatalf("grace refunded without attestation: %+v", rep)
 		}
-		if got := stateOf(t, e, cr); got != "FROZEN" {
+		if got := stateOf(t, e, c, cr); got != "FROZEN" {
 			t.Fatalf("state = %s, want FROZEN (no auto-refund)", got)
 		}
 		if n := settlementRowCount(t, cr.PocketID); n != 0 {
@@ -243,15 +249,16 @@ func TestGraceRefundRequiresAttestation(t *testing.T) {
 
 	t.Run("attestation then grace lapse refunds", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := fundPocket(t, e, vendorInitiatedP2P())
+		c := stdCast(t, e)
+		cr := fundPocket(t, e, c, vendorInitiatedP2P())
 		e.clock.advance(2881 * time.Minute)
 		e.tick(t) // -> FROZEN
 
-		if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/attest-non-receipt", cr.Tokens["buyer"], nil); status != 200 {
+		if status, data := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/attest-non-receipt", "", nil); status != 200 {
 			t.Fatalf("attest: %d %s", status, data)
 		}
 		// Still frozen until the grace period actually lapses.
-		if got := stateOf(t, e, cr); got != "FROZEN" {
+		if got := stateOf(t, e, c, cr); got != "FROZEN" {
 			t.Fatalf("state after attest = %s, want FROZEN", got)
 		}
 
@@ -259,7 +266,7 @@ func TestGraceRefundRequiresAttestation(t *testing.T) {
 		if rep := e.tick(t); rep.GraceRefunded != 1 {
 			t.Fatalf("sweep report = %+v, want 1 grace refund", rep)
 		}
-		if got := stateOf(t, e, cr); got != "REFUNDED" {
+		if got := stateOf(t, e, c, cr); got != "REFUNDED" {
 			t.Fatalf("state = %s, want REFUNDED", got)
 		}
 		if n := countCalls(e.gateway.Calls(), "Refund"); n != 1 {
@@ -272,16 +279,17 @@ func TestGraceRefundRequiresAttestation(t *testing.T) {
 // pocket (#8): FROZEN → DELIVERED_PENDING.
 func TestFrozenLateCodeEntry(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, vendorInitiatedP2P())
-	code := releaseCodeOf(t, e, cr)
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
+	code := releaseCodeOf(t, e, c, cr)
 
 	e.clock.advance(2881 * time.Minute)
 	e.tick(t) // -> FROZEN
-	if got := stateOf(t, e, cr); got != "FROZEN" {
+	if got := stateOf(t, e, c, cr); got != "FROZEN" {
 		t.Fatalf("precondition state = %s, want FROZEN", got)
 	}
 
-	_, res := enterCode(t, e, cr, code)
+	_, res := enterCode(t, e, c, cr, code)
 	if !res.Accepted || res.State != "DELIVERED_PENDING" {
 		t.Fatalf("late code entry = %+v, want accepted DELIVERED_PENDING", res)
 	}
@@ -294,9 +302,10 @@ func TestFrozenLateCodeEntry(t *testing.T) {
 func TestDisputeVersusSettleRace(t *testing.T) {
 	t.Run("boundary: settlement wins, dispute rejected", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := fundPocket(t, e, vendorInitiatedP2P())
-		code := releaseCodeOf(t, e, cr)
-		enterCode(t, e, cr, code) // -> DELIVERED_PENDING, settle_after = now + 24h
+		c := stdCast(t, e)
+		cr := fundPocket(t, e, c, vendorInitiatedP2P())
+		code := releaseCodeOf(t, e, c, cr)
+		enterCode(t, e, c, cr, code) // -> DELIVERED_PENDING, settle_after = now + 24h
 
 		e.clock.advance(1440 * time.Minute) // exactly at settle_after
 
@@ -307,7 +316,7 @@ func TestDisputeVersusSettleRace(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			disputeState, _ = e.req(t, "POST", "/api/p/"+cr.ShortCode+"/report-issue", cr.Tokens["buyer"], nil)
+			disputeState, _ = e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/report-issue", "", nil)
 		}()
 		go func() {
 			defer wg.Done()
@@ -321,7 +330,7 @@ func TestDisputeVersusSettleRace(t *testing.T) {
 		}
 		// Ensure settlement completes (a follow-up tick covers the skip-locked case).
 		e.tick(t)
-		if got := stateOf(t, e, cr); got != "SETTLED" {
+		if got := stateOf(t, e, c, cr); got != "SETTLED" {
 			t.Fatalf("state = %s, want SETTLED", got)
 		}
 
@@ -339,15 +348,16 @@ func TestDisputeVersusSettleRace(t *testing.T) {
 
 	t.Run("dispute before boundary blocks settlement", func(t *testing.T) {
 		e := newTestEnv(t)
-		cr := fundPocket(t, e, vendorInitiatedP2P())
-		code := releaseCodeOf(t, e, cr)
-		enterCode(t, e, cr, code)
+		c := stdCast(t, e)
+		cr := fundPocket(t, e, c, vendorInitiatedP2P())
+		code := releaseCodeOf(t, e, c, cr)
+		enterCode(t, e, c, cr, code)
 
 		e.clock.advance(1439 * time.Minute) // still inside the window
-		if status, data := e.req(t, "POST", "/api/p/"+cr.ShortCode+"/report-issue", cr.Tokens["buyer"], nil); status != 200 {
+		if status, data := e.reqAs(t, c.buyer, "POST", "/api/p/"+cr.ShortCode+"/report-issue", "", nil); status != 200 {
 			t.Fatalf("report-issue: %d %s", status, data)
 		}
-		if got := stateOf(t, e, cr); got != "DISPUTED" {
+		if got := stateOf(t, e, c, cr); got != "DISPUTED" {
 			t.Fatalf("state = %s, want DISPUTED", got)
 		}
 
@@ -356,7 +366,7 @@ func TestDisputeVersusSettleRace(t *testing.T) {
 		if rep := e.tick(t); rep.Settled != 0 {
 			t.Fatalf("disputed pocket was settled: %+v", rep)
 		}
-		if got := stateOf(t, e, cr); got != "DISPUTED" {
+		if got := stateOf(t, e, c, cr); got != "DISPUTED" {
 			t.Fatalf("state = %s, want DISPUTED", got)
 		}
 		if n := settlementRowCount(t, cr.PocketID); n != 0 {
@@ -369,9 +379,10 @@ func TestDisputeVersusSettleRace(t *testing.T) {
 // twice: once a pocket has settled, further ticks make no new gateway calls.
 func TestDuplicateSweepNoDoublePay(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, vendorInitiatedP2P())
-	code := releaseCodeOf(t, e, cr)
-	enterCode(t, e, cr, code)
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
+	code := releaseCodeOf(t, e, c, cr)
+	enterCode(t, e, c, cr, code)
 
 	e.clock.advance(1441 * time.Minute)
 	e.tick(t) // settles
@@ -394,9 +405,10 @@ func TestDuplicateSweepNoDoublePay(t *testing.T) {
 // pending leg and pays it exactly once.
 func TestCrashRecoveryOfPendingLegs(t *testing.T) {
 	e := newTestEnv(t)
-	cr := fundPocket(t, e, vendorInitiatedP2P())
-	code := releaseCodeOf(t, e, cr)
-	enterCode(t, e, cr, code) // -> DELIVERED_PENDING
+	c := stdCast(t, e)
+	cr := fundPocket(t, e, c, vendorInitiatedP2P())
+	code := releaseCodeOf(t, e, c, cr)
+	enterCode(t, e, c, cr, code) // -> DELIVERED_PENDING
 
 	// Drive settlement through the store's write path directly, bypassing the
 	// application's post-commit disbursement — the leg is committed but unpaid,
@@ -406,7 +418,7 @@ func TestCrashRecoveryOfPendingLegs(t *testing.T) {
 		pocket.Event{Kind: pocket.EvSettleDue}, e.clock.now()); err != nil {
 		t.Fatalf("direct settle: %v", err)
 	}
-	if got := stateOf(t, e, cr); got != "SETTLED" {
+	if got := stateOf(t, e, c, cr); got != "SETTLED" {
 		t.Fatalf("state = %s, want SETTLED", got)
 	}
 	if n := countCalls(e.gateway.Calls(), "Payout"); n != 0 {
