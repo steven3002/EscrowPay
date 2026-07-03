@@ -8,6 +8,24 @@ import (
 	"escrowpay/internal/store"
 )
 
+// authByShortCode loads the pocket named by the {shortCode} path value and
+// authenticates the caller against its participants. On any failure it writes the
+// mapped error response and returns ok=false, so a handler can early-return. It
+// centralizes the load-then-authenticate preamble the mutating endpoints share.
+func (a *API) authByShortCode(w http.ResponseWriter, r *http.Request) (store.PocketRecord, string, bool) {
+	rec, parts, err := a.app.LoadByShortCode(r.Context(), r.PathValue("shortCode"))
+	if err != nil {
+		a.writeError(w, err)
+		return store.PocketRecord{}, "", false
+	}
+	role, err := a.authParticipant(r, rec.ID, parts)
+	if err != nil {
+		a.writeError(w, err)
+		return store.PocketRecord{}, "", false
+	}
+	return rec, role, true
+}
+
 const linkTokenHeader = "X-Link-Token"
 
 var (

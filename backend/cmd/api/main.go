@@ -13,11 +13,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"escrowpay/internal/evidence"
 	"escrowpay/internal/gateway/mock"
 	"escrowpay/internal/httpapi"
 	"escrowpay/internal/linktoken"
 	"escrowpay/internal/notify/logstub"
 	"escrowpay/internal/pocketapp"
+	"escrowpay/internal/settlement"
 	"escrowpay/internal/store"
 )
 
@@ -45,18 +47,34 @@ func main() {
 	// log-stub notifier, and demo-grade link tokens.
 	repo := store.New(pool, cfg.FundingLinkTTL, cfg.GracePeriod, cfg.EvidenceCaptureWindow)
 	minter := linktoken.NewMinter(cfg.LinkTokenSecret)
+	evidenceStore, err := evidence.NewFileStore(cfg.EvidenceDir)
+	if err != nil {
+		logger.Error("evidence store init failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 	app := pocketapp.New(pocketapp.Config{
 		Store:                 repo,
 		Gateway:               mock.New(),
 		Notifier:              logstub.New(logger),
 		Minter:                minter,
+		Evidence:              evidenceStore,
 		Logger:                logger,
 		ReleaseCodeSecret:     cfg.ReleaseCodeSecret,
 		FundingLinkTTL:        cfg.FundingLinkTTL,
 		GracePeriod:           cfg.GracePeriod,
 		EvidenceCaptureWindow: cfg.EvidenceCaptureWindow,
+		EvidenceMaxBytes:      cfg.EvidenceMaxBytes,
 		Sandbox:               cfg.SandboxMode,
 	})
+
+	// The settlement sweeper drives every clock-triggered transition and
+	// reconciles unpaid legs. It shares the process lifecycle: ctx cancellation
+	// on shutdown stops its loop.
+	if cfg.SweeperEnabled {
+		go settlement.NewSweeper(app, cfg.SweeperInterval, logger).Run(ctx)
+	} else {
+		logger.Warn("settlement sweeper disabled; timer-driven transitions will not fire")
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler(pool))

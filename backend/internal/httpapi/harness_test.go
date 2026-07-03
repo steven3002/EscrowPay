@@ -18,11 +18,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"escrowpay/internal/evidence"
 	"escrowpay/internal/gateway/mock"
 	"escrowpay/internal/httpapi"
 	"escrowpay/internal/linktoken"
 	"escrowpay/internal/notify/logstub"
 	"escrowpay/internal/pocketapp"
+	"escrowpay/internal/settlement"
 	"escrowpay/internal/store"
 )
 
@@ -37,6 +39,25 @@ const (
 )
 
 var fixedNow = time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+
+// testClock is a mutable, concurrency-safe clock for driving timer-based
+// transitions in tests without real sleeps. It starts at fixedNow.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
 
 func TestMain(m *testing.M) {
 	if err := setupDB(); err != nil {
@@ -135,9 +156,15 @@ type testEnv struct {
 	store   *store.Store
 	minter  *linktoken.Minter
 	logs    *safeBuffer
+	clock   *testClock
+	sweeper *settlement.Sweeper
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+func newTestEnv(t *testing.T) *testEnv { return newEnv(t, true) }
+
+// newEnv builds a running API with the given sandbox mode, so tests can exercise
+// both the demo-open surface and its non-sandbox rejection.
+func newEnv(t *testing.T, sandbox bool) *testEnv {
 	t.Helper()
 	if testPool == nil {
 		t.Skip("integration Postgres not available")
@@ -147,21 +174,28 @@ func newTestEnv(t *testing.T) *testEnv {
 	logs := &safeBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, nil))
 
+	clock := &testClock{t: fixedNow}
 	gw := mock.New()
 	repo := store.New(testPool, 72*time.Hour, 24*time.Hour, 60*time.Minute)
 	minter := linktoken.NewMinter([]byte(testLinkTokenSecret))
+	blobs, err := evidence.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("evidence store: %v", err)
+	}
 	app := pocketapp.New(pocketapp.Config{
 		Store:                 repo,
 		Gateway:               gw,
 		Notifier:              logstub.New(logger),
 		Minter:                minter,
+		Evidence:              blobs,
 		Logger:                logger,
 		ReleaseCodeSecret:     []byte(testReleaseCodeSecret),
 		FundingLinkTTL:        72 * time.Hour,
 		GracePeriod:           24 * time.Hour,
 		EvidenceCaptureWindow: 60 * time.Minute,
-		Sandbox:               true,
-		Now:                   func() time.Time { return fixedNow },
+		EvidenceMaxBytes:      8 << 20,
+		Sandbox:               sandbox,
+		Now:                   clock.now,
 	})
 
 	mux := http.NewServeMux()
@@ -169,7 +203,21 @@ func newTestEnv(t *testing.T) *testEnv {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	return &testEnv{server: srv, gateway: gw, store: repo, minter: minter, logs: logs}
+	return &testEnv{
+		server:  srv,
+		gateway: gw,
+		store:   repo,
+		minter:  minter,
+		logs:    logs,
+		clock:   clock,
+		sweeper: settlement.NewSweeper(app, time.Minute, logger),
+	}
+}
+
+// tick runs one sweeper pass at the current clock time and returns its report.
+func (e *testEnv) tick(t *testing.T) settlement.Report {
+	t.Helper()
+	return e.sweeper.Tick(context.Background())
 }
 
 func truncate(t *testing.T) {

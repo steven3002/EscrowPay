@@ -121,6 +121,16 @@ func markAcceptedTx(ctx context.Context, tx pgx.Tx, pocketID, role string, now t
 	return tag.RowsAffected() == 1, nil
 }
 
+// roleAccepted reports whether the participant in the given role has accepted.
+func roleAccepted(parts []ParticipantRecord, role string) bool {
+	for _, p := range parts {
+		if p.Role == role {
+			return p.Accepted
+		}
+	}
+	return false
+}
+
 // allAccepted reports whether every participant has accepted.
 func allAccepted(parts []ParticipantRecord) bool {
 	for _, p := range parts {

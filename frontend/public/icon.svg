@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="EscrowPay">
+  <rect width="512" height="512" rx="112" fill="#059669"/>
+  <path d="M256 96l128 56v96c0 82-54 150-128 172-74-22-128-90-128-172v-96l128-56z" fill="none" stroke="#ffffff" stroke-width="28" stroke-linejoin="round"/>
+  <path d="M206 258l34 34 68-72" fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

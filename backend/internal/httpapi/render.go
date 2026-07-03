@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"escrowpay/internal/evidence"
 	"escrowpay/internal/pocket"
 	"escrowpay/internal/pocketapp"
 	"escrowpay/internal/store"
@@ -45,13 +46,20 @@ func classify(err error) (int, string) {
 		return http.StatusNotFound, "not found"
 	case errors.Is(err, pocketapp.ErrInvalidInput), errors.Is(err, pocket.ErrInvalidSpec), errors.Is(err, errBadRequest):
 		return http.StatusBadRequest, messageOf(err)
+	case errors.Is(err, pocket.ErrCodeLocked):
+		return http.StatusLocked, "release code entry is locked after too many attempts"
+	case errors.Is(err, evidence.ErrTooLarge):
+		return http.StatusRequestEntityTooLarge, "evidence file is too large"
 	case errors.Is(err, store.ErrConflict),
 		errors.Is(err, store.ErrIllegalState),
+		errors.Is(err, store.ErrAwaitingVendor),
 		errors.Is(err, store.ErrAlreadyAccepted),
 		errors.Is(err, store.ErrAlreadyClaimed),
 		errors.Is(err, store.ErrNotClaimed),
 		errors.Is(err, pocket.ErrIllegalTransition),
 		errors.Is(err, pocket.ErrTerminal),
+		errors.Is(err, pocket.ErrNotYetDue),
+		errors.Is(err, pocket.ErrWindowClosed),
 		errors.Is(err, pocketapp.ErrCodeNotReady):
 		return http.StatusConflict, messageOf(err)
 	default:

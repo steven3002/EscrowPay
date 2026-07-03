@@ -12,11 +12,37 @@ import (
 	"escrowpay/internal/store"
 )
 
-// executeEffects runs each effect a transition returned, after the state change
-// has committed. Effects are best-effort and idempotent: a failure is logged,
-// not fatal, because the committed state is authoritative and the settlement
-// sweeper (s4) re-derives and retries unfinished money movements. The plaintext
-// Release Code is never logged.
+// applyOutcome runs a committed transition's side effects: first the notify /
+// funding-link / release-code effects, then, when the transition moved money,
+// the disbursement of the settlement legs it recorded in-transaction. Both halves
+// are idempotent and best-effort — the committed state is authoritative, and the
+// sweeper re-derives and retries anything left unfinished by a crash.
+func (a *App) applyOutcome(ctx context.Context, pocketID string, out pocket.Outcome) {
+	a.executeEffects(ctx, pocketID, out)
+	if movesMoney(out) {
+		if err := a.paySettlements(ctx, pocketID); err != nil {
+			a.logger.Error("settlement disbursement failed",
+				slog.String("pocket_id", pocketID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+}
+
+// movesMoney reports whether an outcome recorded any settlement legs to disburse.
+func movesMoney(out pocket.Outcome) bool {
+	for _, e := range out.Effects {
+		switch e.(type) {
+		case pocket.SchedulePayout, pocket.ExecuteRefund:
+			return true
+		}
+	}
+	return false
+}
+
+// executeEffects runs each non-money effect a transition returned, after the
+// state change has committed. Effects are best-effort and idempotent: a failure
+// is logged, not fatal. The plaintext Release Code is never logged.
 func (a *App) executeEffects(ctx context.Context, pocketID string, out pocket.Outcome) {
 	buyerTotal := out.Pocket.BuyerTotalKobo()
 	for _, e := range out.Effects {
@@ -62,11 +88,11 @@ func (a *App) executeEffect(ctx context.Context, pocketID string, buyerTotal int
 			Message:  "Record your unboxing video now to protect your purchase.",
 		})
 
-	case pocket.SchedulePayout:
-		return a.schedulePayout(ctx, pocketID, eff.Legs)
-
-	case pocket.ExecuteRefund:
-		return a.executeRefund(ctx, pocketID, eff)
+	case pocket.SchedulePayout, pocket.ExecuteRefund:
+		// Money movements are persisted as pending settlement legs inside the
+		// transition's own transaction (store.recordSettlementLegsTx) and
+		// disbursed by paySettlements after commit. Nothing to do here.
+		return nil
 
 	case pocket.StartGrace:
 		// The grace deadline is persisted by the transition itself; the sweeper
@@ -74,13 +100,12 @@ func (a *App) executeEffect(ctx context.Context, pocketID string, buyerTotal int
 		return nil
 
 	case pocket.Sanction:
-		// Enforcement bookkeeping is finalized with disputes (s5); record intent.
 		a.logger.Info("sanction recorded",
 			slog.String("pocket_id", pocketID),
 			slog.String("role", string(eff.Role)),
 			slog.String("kind", string(eff.Kind)),
 		)
-		return nil
+		return a.store.RecordSanction(ctx, pocketID, string(eff.Role))
 
 	default:
 		a.logger.Warn("unhandled effect",
@@ -107,57 +132,50 @@ func (a *App) generateReleaseCode(ctx context.Context, pocketID string) error {
 	return a.store.SetReleaseCode(ctx, pocketID, hash, enc)
 }
 
-// schedulePayout disburses each settlement leg with a stable idempotency key so
-// retries never move money twice.
-func (a *App) schedulePayout(ctx context.Context, pocketID string, legs []pocket.PayoutLeg) error {
+// paySettlements disburses every pending leg of one pocket. It is the immediate
+// post-commit half of two-phase settlement; the sweeper runs the same logic over
+// all pockets to recover legs a crash left pending.
+func (a *App) paySettlements(ctx context.Context, pocketID string) error {
+	legs, err := a.store.PendingSettlementLegsForPocket(ctx, pocketID)
+	if err != nil {
+		return err
+	}
 	for _, leg := range legs {
-		key := fmt.Sprintf("%s:payout:%s", pocketID, leg.Role)
-		if _, err := a.store.RecordSettlementLeg(ctx, store.SettlementLeg{
-			PocketID:        pocketID,
-			Direction:       "payout",
-			BeneficiaryRole: string(leg.Role),
-			AmountKobo:      leg.AmountKobo,
-			IdempotencyKey:  key,
-		}); err != nil {
-			return err
-		}
-		ref, err := a.gateway.Payout(ctx, gateway.PayoutRequest{
-			PocketID:        pocketID,
-			BeneficiaryRole: string(leg.Role),
-			AmountKobo:      leg.AmountKobo,
-			IdempotencyKey:  key,
-		})
-		if err != nil {
-			return err
-		}
-		if err := a.store.ConfirmSettlement(ctx, key, ref); err != nil {
+		if err := a.payLeg(ctx, leg); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// executeRefund returns the buyer's funds as a single settlement leg.
-func (a *App) executeRefund(ctx context.Context, pocketID string, eff pocket.ExecuteRefund) error {
-	key := fmt.Sprintf("%s:refund:%s", pocketID, eff.BeneficiaryRole)
-	if _, err := a.store.RecordSettlementLeg(ctx, store.SettlementLeg{
-		PocketID:        pocketID,
-		Direction:       "refund",
-		BeneficiaryRole: string(eff.BeneficiaryRole),
-		AmountKobo:      eff.AmountKobo,
-		IdempotencyKey:  key,
-	}); err != nil {
-		return err
+// payLeg pushes one settlement leg through the gateway under its stable
+// idempotency key, then marks it confirmed. Replaying a leg is safe end to end:
+// the gateway returns the original reference for a seen key, and ConfirmSettlement
+// only advances a leg still pending — so money moves at most once.
+func (a *App) payLeg(ctx context.Context, leg store.SettlementLeg) error {
+	var ref string
+	var err error
+	switch leg.Direction {
+	case "payout":
+		ref, err = a.gateway.Payout(ctx, gateway.PayoutRequest{
+			PocketID:        leg.PocketID,
+			BeneficiaryRole: leg.BeneficiaryRole,
+			AmountKobo:      leg.AmountKobo,
+			IdempotencyKey:  leg.IdempotencyKey,
+		})
+	case "refund":
+		ref, err = a.gateway.Refund(ctx, gateway.RefundRequest{
+			PocketID:       leg.PocketID,
+			AmountKobo:     leg.AmountKobo,
+			IdempotencyKey: leg.IdempotencyKey,
+		})
+	default:
+		return fmt.Errorf("unknown settlement direction %q", leg.Direction)
 	}
-	ref, err := a.gateway.Refund(ctx, gateway.RefundRequest{
-		PocketID:       pocketID,
-		AmountKobo:     eff.AmountKobo,
-		IdempotencyKey: key,
-	})
 	if err != nil {
 		return err
 	}
-	return a.store.ConfirmSettlement(ctx, key, ref)
+	return a.store.ConfirmSettlement(ctx, leg.IdempotencyKey, ref)
 }
 
 // messageFor renders demo notification copy for a transition's notify kind. It

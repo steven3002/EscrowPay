@@ -19,12 +19,21 @@ type pocketView struct {
 	Structure    string            `json:"structure"`
 	Mode         string            `json:"mode"`
 	YourRole     string            `json:"your_role"`
+	You          viewerView        `json:"you"`
 	Item         itemView          `json:"item"`
 	Money        moneyView         `json:"money"`
 	Counterparty *counterpartyView `json:"counterparty,omitempty"`
 	Timers       timersView        `json:"timers"`
 	FundingURL   string            `json:"funding_url,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
+}
+
+// viewerView tells the requesting participant where they stand in the
+// pre-acceptance handshake, so the client can show the right next step (claim,
+// accept, or wait) without inferring it from state alone.
+type viewerView struct {
+	Claimed  bool `json:"claimed"`
+	Accepted bool `json:"accepted"`
 }
 
 type itemView struct {
@@ -65,6 +74,7 @@ func buildPocketView(rec store.PocketRecord, parts []store.ParticipantRecord, ro
 		Structure: string(p.Structure),
 		Mode:      string(p.Mode),
 		YourRole:  role,
+		You:       viewerOf(parts, role),
 		Item:      itemView{Description: rec.ItemDescription, Category: rec.Category},
 		Money:     moneyView{Currency: "NGN"},
 		Timers: timersView{
@@ -94,6 +104,16 @@ func buildPocketView(rec store.PocketRecord, parts []store.ParticipantRecord, ro
 		v.Money.PremiumKobo = int64Ptr(p.PremiumKobo)
 	}
 	return v
+}
+
+// viewerOf reports the requesting participant's claim/accept status.
+func viewerOf(parts []store.ParticipantRecord, role string) viewerView {
+	for _, p := range parts {
+		if p.Role == role {
+			return viewerView{Claimed: p.UserID != "", Accepted: p.Accepted}
+		}
+	}
+	return viewerView{}
 }
 
 // sellerRole is the role a buyer transacts with: the vendor in a p2p pocket, or

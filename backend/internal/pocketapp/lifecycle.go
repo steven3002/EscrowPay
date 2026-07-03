@@ -108,7 +108,7 @@ func (a *App) Accept(ctx context.Context, pocketID string, role pocket.Role, del
 		return store.AcceptResult{}, err
 	}
 	if res.Completed {
-		a.executeEffects(ctx, res.PocketID, res.Outcome)
+		a.applyOutcome(ctx, res.PocketID, res.Outcome)
 	}
 	return res, nil
 }
@@ -123,7 +123,7 @@ func (a *App) SimulateFunding(ctx context.Context, pocketID string) (store.Write
 	if err != nil {
 		return store.WriteResult{}, err
 	}
-	a.executeEffects(ctx, res.PocketID, res.Outcome)
+	a.applyOutcome(ctx, res.PocketID, res.Outcome)
 	return res, nil
 }
 
@@ -141,7 +141,7 @@ func (a *App) Cancel(ctx context.Context, pocketID string, actorRole pocket.Role
 	if err != nil {
 		return store.WriteResult{}, err
 	}
-	a.executeEffects(ctx, res.PocketID, res.Outcome)
+	a.applyOutcome(ctx, res.PocketID, res.Outcome)
 	return res, nil
 }
 

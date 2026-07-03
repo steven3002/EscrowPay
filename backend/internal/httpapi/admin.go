@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -23,7 +24,17 @@ type adminDetailView struct {
 	Timers          timersView         `json:"timers"`
 	Participants    []adminParticipant `json:"participants"`
 	Events          []adminEvent       `json:"events"`
+	Dispute         *adminDispute      `json:"dispute,omitempty"`
+	Evidence        []evidenceView     `json:"evidence"`
 	CreatedAt       time.Time          `json:"created_at"`
+}
+
+type adminDispute struct {
+	Class      string    `json:"class"`
+	OpenedBy   string    `json:"opened_by"`
+	State      string    `json:"state"`
+	Resolution string    `json:"resolution,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type adminParticipant struct {
@@ -50,15 +61,124 @@ func (a *API) handleAdminDetail(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, errForbidden)
 		return
 	}
-	rec, parts, events, err := a.app.Detail(r.Context(), r.PathValue("id"))
+	view, err := a.assembleAdminDetail(r, r.PathValue("id"))
 	if err != nil {
 		a.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, buildAdminDetail(rec, parts, events))
+	writeJSON(w, http.StatusOK, view)
 }
 
-func buildAdminDetail(rec store.PocketRecord, parts []store.ParticipantRecord, events []store.EventRecord) adminDetailView {
+type forcePayoutRequest struct {
+	BadFaith bool `json:"bad_faith"`
+}
+
+// handleForceRefund is the admin arbitration outcome against the vendor: refund
+// the buyer and flag the vendor (#14). Sandbox-gated like the rest of the admin
+// surface.
+func (a *API) handleForceRefund(w http.ResponseWriter, r *http.Request) {
+	if !a.app.Sandbox() {
+		a.writeError(w, errForbidden)
+		return
+	}
+	if _, err := a.app.ForceRefund(r.Context(), r.PathValue("id")); err != nil {
+		a.writeError(w, err)
+		return
+	}
+	a.writeAdminDetail(w, r, r.PathValue("id"))
+}
+
+// handleForcePayout is the admin arbitration outcome against the buyer: release
+// to the vendor, optionally striking the buyer (#15).
+func (a *API) handleForcePayout(w http.ResponseWriter, r *http.Request) {
+	if !a.app.Sandbox() {
+		a.writeError(w, errForbidden)
+		return
+	}
+	var req forcePayoutRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		a.writeError(w, err)
+		return
+	}
+	if _, err := a.app.ForcePayout(r.Context(), r.PathValue("id"), req.BadFaith); err != nil {
+		a.writeError(w, err)
+		return
+	}
+	a.writeAdminDetail(w, r, r.PathValue("id"))
+}
+
+type disputeQueueItem struct {
+	PocketID  string    `json:"pocket_id"`
+	ShortCode string    `json:"short_code"`
+	State     string    `json:"state"`
+	Class     string    `json:"class"`
+	OpenedBy  string    `json:"opened_by"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// handleDisputeQueue returns the open-dispute arbitration queue.
+func (a *API) handleDisputeQueue(w http.ResponseWriter, r *http.Request) {
+	if !a.app.Sandbox() {
+		a.writeError(w, errForbidden)
+		return
+	}
+	items, err := a.app.ListDisputes(r.Context())
+	if err != nil {
+		a.writeError(w, err)
+		return
+	}
+	out := make([]disputeQueueItem, 0, len(items))
+	for _, it := range items {
+		out = append(out, disputeQueueItem{
+			PocketID:  it.PocketID,
+			ShortCode: it.ShortCode,
+			State:     it.State,
+			Class:     it.Class,
+			OpenedBy:  it.OpenedBy,
+			CreatedAt: it.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"disputes": out})
+}
+
+// writeAdminDetail reloads a pocket and writes its full admin detail, so an
+// arbitration action returns the resulting state and audit trail.
+func (a *API) writeAdminDetail(w http.ResponseWriter, r *http.Request, pocketID string) {
+	view, err := a.assembleAdminDetail(r, pocketID)
+	if err != nil {
+		a.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// assembleAdminDetail gathers a pocket's full arbitration picture: state and
+// timeline, all evidence, and the dispute record if one was opened.
+func (a *API) assembleAdminDetail(r *http.Request, pocketID string) (adminDetailView, error) {
+	rec, parts, events, err := a.app.Detail(r.Context(), pocketID)
+	if err != nil {
+		return adminDetailView{}, err
+	}
+	evidence, err := a.app.Evidence(r.Context(), pocketID)
+	if err != nil {
+		return adminDetailView{}, err
+	}
+	view := buildAdminDetail(rec, parts, events, evidence)
+	if d, err := a.app.Dispute(r.Context(), pocketID); err == nil {
+		view.Dispute = &adminDispute{
+			Class:      d.Class,
+			OpenedBy:   d.OpenedBy,
+			State:      d.State,
+			Resolution: d.Resolution,
+			CreatedAt:  d.CreatedAt,
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return adminDetailView{}, err
+	}
+	return view, nil
+}
+
+func buildAdminDetail(rec store.PocketRecord, parts []store.ParticipantRecord, events []store.EventRecord, evidence []store.EvidenceRecord) adminDetailView {
 	p := rec.Pocket
 	view := adminDetailView{
 		ID:        rec.ID,
@@ -100,6 +220,18 @@ func buildAdminDetail(rec store.PocketRecord, parts []store.ParticipantRecord, e
 			ToState:   e.ToState,
 			Kind:      e.Kind,
 			CreatedAt: e.CreatedAt,
+		})
+	}
+	view.Evidence = make([]evidenceView, 0, len(evidence))
+	for _, e := range evidence {
+		created := e.CreatedAt
+		view.Evidence = append(view.Evidence, evidenceView{
+			ID:           e.ID,
+			Party:        e.Party,
+			Type:         e.Type,
+			CapturedAt:   e.CapturedAt,
+			WithinWindow: e.WithinWindow,
+			CreatedAt:    &created,
 		})
 	}
 	return view

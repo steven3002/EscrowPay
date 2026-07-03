@@ -31,7 +31,11 @@ func New(app *pocketapp.App, minter *linktoken.Minter, logger *slog.Logger) *API
 //	vendor  — POST /api/pockets                                 (create)
 //	public  — GET  /api/p/{shortCode}                           (role-scoped view)
 //	          POST /api/p/{shortCode}/claim | /accept | /cancel
+//	vendor  — POST /api/p/{shortCode}/enter-code                (Release Code)
+//	          POST /api/p/{shortCode}/confirm-dispatch-failure  (frozen refund)
 //	buyer   — GET  /api/pockets/{id}/release-code               (buyer-only)
+//	          POST /api/p/{shortCode}/report-issue              (dispute)
+//	          POST /api/p/{shortCode}/attest-non-receipt        (frozen)
 //	demo    — POST /api/demo/pockets/{id}/simulate-funding      (sandbox)
 //	admin   — GET  /api/admin/pockets/{id}                      (full detail)
 func (a *API) Register(mux *http.ServeMux) {
@@ -42,9 +46,22 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/p/{shortCode}/accept", a.handleAccept)
 	mux.HandleFunc("POST /api/p/{shortCode}/cancel", a.handleCancel)
 
+	mux.HandleFunc("POST /api/p/{shortCode}/enter-code", a.handleEnterCode)
+	mux.HandleFunc("POST /api/p/{shortCode}/report-issue", a.handleReportIssue)
+	mux.HandleFunc("POST /api/p/{shortCode}/confirm-dispatch-failure", a.handleConfirmDispatchFailure)
+	mux.HandleFunc("POST /api/p/{shortCode}/attest-non-receipt", a.handleAttestNonReceipt)
+
+	mux.HandleFunc("POST /api/p/{shortCode}/dispute", a.handleOpenDispute)
+	mux.HandleFunc("POST /api/p/{shortCode}/concede", a.handleConcede)
+	mux.HandleFunc("POST /api/p/{shortCode}/evidence", a.handleUploadEvidence)
+	mux.HandleFunc("GET /api/p/{shortCode}/dispute", a.handleDisputeView)
+
 	mux.HandleFunc("GET /api/pockets/{id}/release-code", a.handleReleaseCode)
 
 	mux.HandleFunc("POST /api/demo/pockets/{id}/simulate-funding", a.handleSimulateFunding)
 
 	mux.HandleFunc("GET /api/admin/pockets/{id}", a.handleAdminDetail)
+	mux.HandleFunc("GET /api/admin/disputes", a.handleDisputeQueue)
+	mux.HandleFunc("POST /api/admin/pockets/{id}/force-refund", a.handleForceRefund)
+	mux.HandleFunc("POST /api/admin/pockets/{id}/force-payout", a.handleForcePayout)
 }

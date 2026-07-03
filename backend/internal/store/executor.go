@@ -132,6 +132,18 @@ func (s *Store) Accept(ctx context.Context, pocketID, role, deliveryAddress, act
 		if part.Accepted {
 			return ErrAlreadyAccepted
 		}
+		// Brokered acceptance is vendor-first: the buyer's link is inert until
+		// the vendor has accepted the offer. Enforced here in the write path,
+		// never in the UI.
+		if rec.Pocket.Structure == pocket.StructureBrokered && role == string(pocket.RoleBuyer) {
+			parts, err := participantsTx(ctx, tx, pocketID)
+			if err != nil {
+				return err
+			}
+			if !roleAccepted(parts, string(pocket.RoleVendor)) {
+				return ErrAwaitingVendor
+			}
+		}
 		accepted, err := markAcceptedTx(ctx, tx, pocketID, role, now)
 		if err != nil {
 			return err
@@ -244,6 +256,12 @@ func applyTransitionTx(ctx context.Context, tx pgx.Tx, pocketID, actor string, r
 		return WriteResult{}, err
 	}
 	if err := insertEventTx(ctx, tx, pocketID, actor, string(rec.Pocket.State), string(out.Pocket.State), string(ev.Kind), eventPayload(ev)); err != nil {
+		return WriteResult{}, err
+	}
+	if err := recordSettlementLegsTx(ctx, tx, pocketID, out); err != nil {
+		return WriteResult{}, err
+	}
+	if err := recordDisputeTx(ctx, tx, pocketID, actor, rec.Pocket.State, out); err != nil {
 		return WriteResult{}, err
 	}
 	return WriteResult{PocketID: pocketID, FromState: rec.Pocket.State, Outcome: out}, nil

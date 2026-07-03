@@ -25,6 +25,16 @@ type config struct {
 	FundingLinkTTL        time.Duration
 	GracePeriod           time.Duration
 	EvidenceCaptureWindow time.Duration
+
+	// SweeperEnabled turns the in-process settlement sweeper on; SweeperInterval
+	// is the poll period between reconciliation passes.
+	SweeperEnabled  bool
+	SweeperInterval time.Duration
+
+	// EvidenceDir is the local directory dispute media is written to;
+	// EvidenceMaxBytes caps a single upload.
+	EvidenceDir      string
+	EvidenceMaxBytes int64
 }
 
 // devLinkTokenSecret and devReleaseCodeSecret are used only when the
@@ -45,6 +55,10 @@ func loadConfig(logger *slog.Logger) config {
 		FundingLinkTTL:        envHours("FUNDING_LINK_TTL_HOURS", 72),
 		GracePeriod:           envHours("GRACE_HOURS", 24),
 		EvidenceCaptureWindow: envMinutes("EVIDENCE_CAPTURE_WINDOW_MINUTES", 60),
+		SweeperEnabled:        envBool("SWEEPER_ENABLED", true),
+		SweeperInterval:       envSeconds("SWEEPER_INTERVAL_SECONDS", 60),
+		EvidenceDir:           envOr("EVIDENCE_DIR", "./data/evidence"),
+		EvidenceMaxBytes:      int64(envInt("EVIDENCE_MAX_MB", 25)) << 20,
 	}
 
 	if len(cfg.LinkTokenSecret) == 0 {
@@ -83,6 +97,10 @@ func envHours(key string, fallbackHours int) time.Duration {
 
 func envMinutes(key string, fallbackMinutes int) time.Duration {
 	return time.Duration(envInt(key, fallbackMinutes)) * time.Minute
+}
+
+func envSeconds(key string, fallbackSeconds int) time.Duration {
+	return time.Duration(envInt(key, fallbackSeconds)) * time.Second
 }
 
 func envInt(key string, fallback int) int {

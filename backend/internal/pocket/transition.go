@@ -227,7 +227,7 @@ func (p Pocket) frozenDispute() (Outcome, error) {
 	next := p
 	next.State = StateDisputed
 	next.DisputeClass = DisputeNotDelivered
-	return Outcome{Pocket: next, Effects: bothNotify(NotifyDisputeOpened)}, nil
+	return Outcome{Pocket: next, Effects: p.disputeNotify()}, nil
 }
 
 // #11 DELIVERED_PENDING → SETTLED once the inspection window has elapsed.
@@ -255,7 +255,7 @@ func (p Pocket) buyerReportIssue(now time.Time) (Outcome, error) {
 	next := p
 	next.State = StateDisputed
 	next.DisputeClass = DisputeNotAsDescribed
-	return Outcome{Pocket: next, Effects: bothNotify(NotifyDisputeOpened)}, nil
+	return Outcome{Pocket: next, Effects: p.disputeNotify()}, nil
 }
 
 // #13 DISPUTED → REFUNDED when the vendor concedes.
@@ -320,4 +320,14 @@ func bothNotify(kind string) []Effect {
 		Notify{Role: RoleBuyer, Kind: kind},
 		Notify{Role: RoleVendor, Kind: kind},
 	}
+}
+
+// disputeNotify notifies both principals a dispute opened, plus the broker as a
+// read-only observer on a brokered pocket.
+func (p Pocket) disputeNotify() []Effect {
+	effects := bothNotify(NotifyDisputeOpened)
+	if p.Structure == StructureBrokered {
+		effects = append(effects, Notify{Role: RoleBroker, Kind: NotifyDisputeOpened})
+	}
+	return effects
 }

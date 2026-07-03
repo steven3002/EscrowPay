@@ -34,6 +34,10 @@ var (
 	// does not permit (distinct from the domain's ErrIllegalTransition, which
 	// covers the domain state machine; this covers draft-level operations).
 	ErrIllegalState = errors.New("store: operation not allowed in current state")
+	// ErrAwaitingVendor is returned when the buyer of a brokered pocket tries to
+	// accept before the vendor has accepted. Brokered acceptance is vendor-first:
+	// the buyer's link is inert until the vendor confirms the offer.
+	ErrAwaitingVendor = errors.New("store: brokered buyer must wait for vendor acceptance")
 )
 
 // StateDraft is a persistence-only position that precedes the domain state
