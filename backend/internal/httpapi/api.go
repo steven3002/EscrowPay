@@ -7,6 +7,7 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"escrowpay/internal/auth"
 	"escrowpay/internal/gateway/nomba"
@@ -27,9 +28,10 @@ type API struct {
 	nombaWebhook *nomba.WebhookVerifier
 	logger       *slog.Logger
 
-	flowSecret   []byte
-	cookieSecure bool
-	trustProxy   bool
+	flowSecret     []byte
+	cookieSecure   bool
+	trustProxy     bool
+	trustedOrigins []string
 
 	globalLimiter *ratelimit.Limiter
 	authLimiter   *ratelimit.Limiter
@@ -55,6 +57,11 @@ type Config struct {
 	// TrustProxy keys rate limits on X-Forwarded-For instead of the TCP peer.
 	// Enable only when every request arrives through the app's own proxy.
 	TrustProxy bool
+	// TrustedOrigins are additional browser origins allowed to make mutating
+	// requests, beyond the request's own host. It lets the frontend live on a
+	// different origin (e.g. a Vercel deployment proxying to this API) without
+	// weakening the same-origin default for everything else.
+	TrustedOrigins []string
 	// RateLimit enables the request limiters. Tests disable it for
 	// determinism except where the limit itself is under test.
 	RateLimit bool
@@ -74,9 +81,10 @@ func New(cfg Config) *API {
 		google:       cfg.Google,
 		nombaWebhook: cfg.NombaWebhook,
 		logger:       logger,
-		flowSecret:   cfg.FlowSecret,
-		cookieSecure: cfg.CookieSecure,
-		trustProxy:   cfg.TrustProxy,
+		flowSecret:     cfg.FlowSecret,
+		cookieSecure:   cfg.CookieSecure,
+		trustProxy:     cfg.TrustProxy,
+		trustedOrigins: cfg.TrustedOrigins,
 	}
 	if cfg.RateLimit {
 		// Budgets are per client key: a generous global ceiling that only
@@ -167,13 +175,19 @@ func (a *API) Middleware(next http.Handler) http.Handler {
 }
 
 // sameOrigin rejects cross-site browser mutations: when an Origin header is
-// present its host must match the host the request was addressed to. Requests
-// without an Origin (same-origin GETs, non-browser clients) pass; the session
-// cookie's SameSite=Lax already keeps them off cross-site POSTs.
+// present its host must match the host the request was addressed to, or the
+// origin must be explicitly trusted. Requests without an Origin (same-origin
+// GETs, non-browser clients) pass; the session cookie's SameSite=Lax already
+// keeps them off cross-site POSTs.
 func (a *API) sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
+	}
+	for _, trusted := range a.trustedOrigins {
+		if strings.EqualFold(origin, trusted) {
+			return true
+		}
 	}
 	host := r.Host
 	if a.trustProxy {

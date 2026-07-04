@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -45,6 +46,9 @@ type config struct {
 	// TrustProxy keys rate limits on X-Forwarded-For; enable only when every
 	// request arrives through the app's own reverse proxy.
 	TrustProxy bool
+	// TrustedOrigins are extra browser origins allowed to make mutating
+	// requests (e.g. a frontend hosted on a different origin that proxies here).
+	TrustedOrigins []string
 	// RateLimitEnabled turns the per-client request limiters on.
 	RateLimitEnabled bool
 
@@ -111,6 +115,7 @@ func loadConfig(logger *slog.Logger) config {
 		SessionTTL:            envHours("SESSION_TTL_HOURS", 720),
 		CookieSecure:          envBool("COOKIE_SECURE", false),
 		TrustProxy:            envBool("TRUST_PROXY", true),
+		TrustedOrigins:        envList("TRUSTED_ORIGINS"),
 		RateLimitEnabled:      envBool("RATE_LIMIT_ENABLED", true),
 		GoogleClientID:        envOr("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret:    envOr("GOOGLE_CLIENT_SECRET", ""),
@@ -138,6 +143,12 @@ func loadConfig(logger *slog.Logger) config {
 	}
 	cfg.SimulateFundingEnabled = envBool("SIMULATE_FUNDING_ENABLED", cfg.GatewayProvider == "mock")
 
+	// Serverless container platforms (Cloud Run and similar) inject the port to
+	// listen on via PORT; honor it over LISTEN_ADDR when present.
+	if port := os.Getenv("PORT"); port != "" {
+		cfg.ListenAddr = ":" + port
+	}
+
 	if len(cfg.LinkTokenSecret) == 0 {
 		logger.Warn("LINK_TOKEN_SECRET unset; using an insecure development secret")
 		cfg.LinkTokenSecret = []byte(devLinkTokenSecret)
@@ -154,6 +165,22 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envList parses a comma-separated environment variable into a trimmed,
+// non-empty slice. An unset or empty value yields nil.
+func envList(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 func envBool(key string, fallback bool) bool {

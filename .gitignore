@@ -3,3 +3,4 @@ docker-compose.yml
 backend/data/
 backend/.env
 docs/DEMO.md
+backend/.env.deploy

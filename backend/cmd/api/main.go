@@ -117,10 +117,11 @@ func main() {
 		Google:       google,
 		NombaWebhook: webhookVerifier,
 		Logger:       logger,
-		FlowSecret:   cfg.LinkTokenSecret,
-		CookieSecure: cfg.CookieSecure,
-		TrustProxy:   cfg.TrustProxy,
-		RateLimit:    cfg.RateLimitEnabled,
+		FlowSecret:     cfg.LinkTokenSecret,
+		CookieSecure:   cfg.CookieSecure,
+		TrustProxy:     cfg.TrustProxy,
+		TrustedOrigins: cfg.TrustedOrigins,
+		RateLimit:      cfg.RateLimitEnabled,
 	})
 	api.Register(mux)
 

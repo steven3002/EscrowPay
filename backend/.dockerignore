@@ -1,0 +1,11 @@
+# Never bake secrets or local state into the image.
+.env
+.env.*
+data/
+*.log
+
+# Build/VCS noise not needed in the image.
+.git
+.gitignore
+Dockerfile
+.dockerignore
