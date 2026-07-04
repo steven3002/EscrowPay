@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"escrowpay/internal/gateway"
 	"escrowpay/internal/pocket"
 	"escrowpay/internal/store"
 )

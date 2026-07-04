@@ -66,10 +66,12 @@ func newFakeNomba(t *testing.T) (*fakeNomba, *httptest.Server) {
 		if body.Order.Currency != "NGN" || body.Order.CustomerEmail == "" || !strings.Contains(body.Order.CallbackURL, "/p/") {
 			f.t.Errorf("order fields = %+v", body.Order)
 		}
-		f.orders.Add(1)
+		// The live API generates its own order reference rather than echoing
+		// the submitted one; the fake mirrors that.
+		n := f.orders.Add(1)
 		f.respond(w, map[string]any{
 			"checkoutLink":   "https://checkout.test/pay/" + body.Order.OrderReference,
-			"orderReference": body.Order.OrderReference,
+			"orderReference": fmt.Sprintf("provider-ref-%d", n),
 		})
 	})
 
@@ -157,8 +159,8 @@ func TestCreateFundingLinkAndTokenReuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create funding link: %v", err)
 	}
-	if link.Ref != "escrowpay-8b6f2c1d-0000-4000-8000-123456789abc" {
-		t.Errorf("ref = %q", link.Ref)
+	if link.Ref != "provider-ref-1" {
+		t.Errorf("ref = %q, want the provider-generated reference", link.Ref)
 	}
 	if !strings.HasPrefix(link.URL, "https://checkout.test/pay/") {
 		t.Errorf("url = %q", link.URL)

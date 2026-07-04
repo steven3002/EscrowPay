@@ -189,6 +189,26 @@ func TestWebhookFundsPocketExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestWebhookFundsPocketBySubmittedReference(t *testing.T) {
+	e := newWebhookEnv(t)
+	_, cr, ref := createdPocketWithRef(t, e)
+
+	// The provider may echo the reference we submitted for the order instead
+	// of the one it generated (which is what the pocket stores). That
+	// reference encodes the pocket id and must resolve too.
+	submitted := "escrowpay-" + cr.PocketID
+	if submitted == ref {
+		t.Fatalf("test premise broken: stored ref %q equals submitted ref", ref)
+	}
+	status, data := deliver(t, e, paymentFor(submitted, "API-CHECKOUT-A2", "10200.00"), testWebhookKey)
+	if status != 200 {
+		t.Fatalf("webhook: status %d, body %s", status, data)
+	}
+	if got := pocketState(t, e, cr.PocketID); got != "FUNDED" {
+		t.Fatalf("state = %s, want FUNDED via the submitted-reference fallback", got)
+	}
+}
+
 func TestWebhookForgedSignatureRejected(t *testing.T) {
 	e := newWebhookEnv(t)
 	_, cr, ref := createdPocketWithRef(t, e)

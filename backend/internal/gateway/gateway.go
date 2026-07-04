@@ -24,13 +24,35 @@ func FundingRef(pocketID string) string {
 }
 
 // PocketIDFromRef recovers the pocket id from a reference minted by
-// FundingRef, reporting whether ref follows that convention.
+// FundingRef, reporting whether ref follows that convention — the prefix
+// followed by a UUID. Anything else (including a provider's own generated
+// references) does not resolve here.
 func PocketIDFromRef(ref string) (string, bool) {
 	id, ok := strings.CutPrefix(ref, fundingRefPrefix)
-	if !ok || id == "" {
+	if !ok || !looksLikeUUID(id) {
 		return "", false
 	}
 	return id, true
+}
+
+func looksLikeUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ErrRejected marks a definitive provider rejection: the request was received,
