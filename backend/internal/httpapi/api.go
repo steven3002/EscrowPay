@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"escrowpay/internal/auth"
+	"escrowpay/internal/gateway/nomba"
 	"escrowpay/internal/linktoken"
 	"escrowpay/internal/pocketapp"
 	"escrowpay/internal/ratelimit"
@@ -18,12 +19,13 @@ import (
 // API is the handler set. Construct it with New and mount it with Register;
 // wrap the mux with Middleware for the cross-cutting concerns.
 type API struct {
-	app    *pocketapp.App
-	minter *linktoken.Minter
-	auth   *auth.Manager
-	users  *store.Store
-	google *auth.Google
-	logger *slog.Logger
+	app          *pocketapp.App
+	minter       *linktoken.Minter
+	auth         *auth.Manager
+	users        *store.Store
+	google       *auth.Google
+	nombaWebhook *nomba.WebhookVerifier
+	logger       *slog.Logger
 
 	flowSecret   []byte
 	cookieSecure bool
@@ -41,7 +43,10 @@ type Config struct {
 	Auth   *auth.Manager
 	Users  *store.Store
 	Google *auth.Google
-	Logger *slog.Logger
+	// NombaWebhook verifies provider payment notifications; nil leaves the
+	// webhook endpoint unmounted (mock-gateway deployments).
+	NombaWebhook *nomba.WebhookVerifier
+	Logger       *slog.Logger
 
 	// FlowSecret signs the transient OIDC flow cookie.
 	FlowSecret []byte
@@ -67,6 +72,7 @@ func New(cfg Config) *API {
 		auth:         cfg.Auth,
 		users:        cfg.Users,
 		google:       cfg.Google,
+		nombaWebhook: cfg.NombaWebhook,
 		logger:       logger,
 		flowSecret:   cfg.FlowSecret,
 		cookieSecure: cfg.CookieSecure,
@@ -97,6 +103,7 @@ func New(cfg Config) *API {
 //	          POST /api/p/{shortCode}/report-issue              (dispute)
 //	          POST /api/p/{shortCode}/attest-non-receipt        (frozen)
 //	demo    — POST /api/demo/pockets/{id}/simulate-funding      (sandbox)
+//	webhook — POST /api/webhooks/nomba                          (HMAC-signed)
 //	admin   — GET  /api/admin/pockets/{id}                      (admin session)
 func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/auth/providers", a.handleAuthProviders)
@@ -128,6 +135,8 @@ func (a *API) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/pockets/{id}/release-code", a.handleReleaseCode)
 
 	mux.HandleFunc("POST /api/demo/pockets/{id}/simulate-funding", a.handleSimulateFunding)
+
+	mux.HandleFunc("POST /api/webhooks/nomba", a.handleNombaWebhook)
 
 	mux.HandleFunc("GET /api/admin/pockets/{id}", a.handleAdminDetail)
 	mux.HandleFunc("GET /api/admin/disputes", a.handleDisputeQueue)

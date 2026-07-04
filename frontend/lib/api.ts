@@ -55,6 +55,10 @@ export interface PocketView {
   counterparty?: Counterparty;
   timers: Timers;
   funding_url?: string;
+  /** funding_url is a live bank checkout the buyer can pay. */
+  funding_checkout?: boolean;
+  /** The sandbox funding shortcut is available on this deployment. */
+  simulate_funding?: boolean;
   created_at: string;
 }
 

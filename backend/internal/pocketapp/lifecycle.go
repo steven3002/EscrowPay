@@ -112,10 +112,11 @@ func (a *App) Accept(ctx context.Context, pocketID string, role pocket.Role, del
 	return res, nil
 }
 
-// SimulateFunding drives transition #2 through the mock gateway. It is the demo
-// stand-in for a real funding webhook and is only available in sandbox mode.
+// SimulateFunding drives transition #2 without a provider payment. It is the
+// demo stand-in for a real funding webhook, available only while the sandbox
+// funding shortcut is enabled.
 func (a *App) SimulateFunding(ctx context.Context, pocketID string) (store.WriteResult, error) {
-	if !a.sandbox {
+	if !a.CanSimulateFunding() {
 		return store.WriteResult{}, ErrForbidden
 	}
 	res, err := a.store.RunTransition(ctx, pocketID, "system", pocket.Event{Kind: pocket.EvFundingConfirmed}, a.now())

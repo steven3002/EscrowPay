@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,7 +16,9 @@ import (
 
 	"escrowpay/internal/auth"
 	"escrowpay/internal/evidence"
+	"escrowpay/internal/gateway"
 	"escrowpay/internal/gateway/mock"
+	"escrowpay/internal/gateway/nomba"
 	"escrowpay/internal/httpapi"
 	"escrowpay/internal/linktoken"
 	"escrowpay/internal/notify/logstub"
@@ -26,6 +29,9 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if applied := loadDotEnv(".env"); applied > 0 {
+		logger.Info("environment loaded from .env", slog.Int("values", applied))
+	}
 	cfg := loadConfig(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -44,9 +50,8 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Wire the application: persistence, the payment gateway (mock until the
-	// real bank adapter lands), the log-stub notifier, and demo-grade link
-	// tokens.
+	// Wire the application: persistence, the configured payment gateway, the
+	// log-stub notifier, and demo-grade link tokens.
 	repo := store.New(pool, cfg.FundingLinkTTL, cfg.GracePeriod, cfg.EvidenceCaptureWindow)
 	minter := linktoken.NewMinter(cfg.LinkTokenSecret)
 	evidenceStore, err := evidence.NewFileStore(cfg.EvidenceDir)
@@ -54,19 +59,29 @@ func main() {
 		logger.Error("evidence store init failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
+
+	gw, webhookVerifier, err := buildGateway(cfg, logger)
+	if err != nil {
+		logger.Error("gateway configuration invalid", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	realGateway := cfg.GatewayProvider != "mock"
+
 	app := pocketapp.New(pocketapp.Config{
-		Store:                 repo,
-		Gateway:               mock.New(),
-		Notifier:              logstub.New(logger),
-		Minter:                minter,
-		Evidence:              evidenceStore,
-		Logger:                logger,
-		ReleaseCodeSecret:     cfg.ReleaseCodeSecret,
-		FundingLinkTTL:        cfg.FundingLinkTTL,
-		GracePeriod:           cfg.GracePeriod,
-		EvidenceCaptureWindow: cfg.EvidenceCaptureWindow,
-		EvidenceMaxBytes:      cfg.EvidenceMaxBytes,
-		Sandbox:               cfg.SandboxMode,
+		Store:                  repo,
+		Gateway:                gw,
+		Notifier:               logstub.New(logger),
+		Minter:                 minter,
+		Evidence:               evidenceStore,
+		Logger:                 logger,
+		ReleaseCodeSecret:      cfg.ReleaseCodeSecret,
+		FundingLinkTTL:         cfg.FundingLinkTTL,
+		GracePeriod:            cfg.GracePeriod,
+		EvidenceCaptureWindow:  cfg.EvidenceCaptureWindow,
+		EvidenceMaxBytes:       cfg.EvidenceMaxBytes,
+		Sandbox:                cfg.SandboxMode,
+		RealGateway:            realGateway,
+		DisableSimulateFunding: !cfg.SimulateFundingEnabled,
 	})
 
 	// The settlement sweeper drives every clock-triggered transition and
@@ -100,6 +115,7 @@ func main() {
 		Auth:         sessions,
 		Users:        repo,
 		Google:       google,
+		NombaWebhook: webhookVerifier,
 		Logger:       logger,
 		FlowSecret:   cfg.LinkTokenSecret,
 		CookieSecure: cfg.CookieSecure,
@@ -129,6 +145,52 @@ func main() {
 		logger.Error("shutdown incomplete", slog.String("error", err.Error()))
 	}
 	logger.Info("api stopped")
+}
+
+// buildGateway constructs the configured payment gateway and, for a real
+// provider, the webhook verifier that authenticates its notifications. An
+// unusable real-gateway configuration is fatal: silently falling back to the
+// mock would let a deployment believe money moves when it does not.
+func buildGateway(cfg config, logger *slog.Logger) (gateway.Gateway, *nomba.WebhookVerifier, error) {
+	switch cfg.GatewayProvider {
+	case "", "mock":
+		logger.Info("payment gateway: mock (no money moves)")
+		return mock.New(), nil, nil
+	case "nomba":
+		client, err := nomba.New(nomba.Config{
+			BaseURL:               cfg.Nomba.BaseURL,
+			ClientID:              cfg.Nomba.ClientID,
+			ClientSecret:          cfg.Nomba.ClientSecret,
+			AccountID:             cfg.Nomba.ParentAccountID,
+			SubAccountID:          cfg.Nomba.SubAccountID,
+			PublicBaseURL:         cfg.Nomba.PublicBaseURL,
+			FallbackCustomerEmail: cfg.Nomba.FallbackCustomerEmail,
+			PayoutBeneficiary: nomba.Beneficiary{
+				AccountNumber: cfg.Nomba.PayoutAccountNumber,
+				BankCode:      cfg.Nomba.PayoutBankCode,
+				AccountName:   cfg.Nomba.PayoutAccountName,
+			},
+			RefundBeneficiary: nomba.Beneficiary{
+				AccountNumber: cfg.Nomba.RefundAccountNumber,
+				BankCode:      cfg.Nomba.RefundBankCode,
+				AccountName:   cfg.Nomba.RefundAccountName,
+			},
+			Logger: logger,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		var verifier *nomba.WebhookVerifier
+		if cfg.Nomba.SignatureKey != "" {
+			verifier = nomba.NewWebhookVerifier([]byte(cfg.Nomba.SignatureKey))
+		} else {
+			logger.Warn("NOMBA_SIGNATURE_KEY unset; webhook ingestion disabled — funding will not confirm without it")
+		}
+		logger.Info("payment gateway: nomba", slog.String("base_url", cfg.Nomba.BaseURL))
+		return client, verifier, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown GATEWAY_PROVIDER %q (want mock or nomba)", cfg.GatewayProvider)
+	}
 }
 
 func healthzHandler(pool *pgxpool.Pool) http.HandlerFunc {

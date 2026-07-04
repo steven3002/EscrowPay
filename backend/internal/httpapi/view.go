@@ -26,7 +26,12 @@ type pocketView struct {
 	Counterparty *counterpartyView `json:"counterparty,omitempty"`
 	Timers       timersView        `json:"timers"`
 	FundingURL   string            `json:"funding_url,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
+	// FundingCheckout marks funding_url as a live provider checkout the buyer
+	// can actually pay; SimulateFunding offers the sandbox funding shortcut.
+	// Both are buyer-only affordances of the CREATED state.
+	FundingCheckout bool      `json:"funding_checkout,omitempty"`
+	SimulateFunding bool      `json:"simulate_funding,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // viewerView tells the requesting participant where they stand in the
@@ -63,6 +68,17 @@ type timersView struct {
 	SettleAfter      *time.Time `json:"settle_after,omitempty"`
 	GraceDeadline    *time.Time `json:"grace_deadline,omitempty"`
 	FundingExpiresAt *time.Time `json:"funding_expires_at,omitempty"`
+}
+
+// pocketView projects rec for the given role and stamps the deployment's
+// funding affordances onto a buyer's CREATED view.
+func (a *API) pocketView(rec store.PocketRecord, parts []store.ParticipantRecord, role string) pocketView {
+	v := buildPocketView(rec, parts, role)
+	if pocket.Role(role) == pocket.RoleBuyer && v.State == string(pocket.StateCreated) {
+		v.SimulateFunding = a.app.CanSimulateFunding()
+		v.FundingCheckout = a.app.RealGateway() && v.FundingURL != ""
+	}
+	return v
 }
 
 // buildPocketView projects rec for the given role.

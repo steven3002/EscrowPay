@@ -21,6 +21,7 @@ import (
 	"escrowpay/internal/auth"
 	"escrowpay/internal/evidence"
 	"escrowpay/internal/gateway/mock"
+	"escrowpay/internal/gateway/nomba"
 	"escrowpay/internal/httpapi"
 	"escrowpay/internal/linktoken"
 	"escrowpay/internal/notify/logstub"
@@ -169,6 +170,9 @@ func newTestEnv(t *testing.T) *testEnv { return newEnv(t, envOptions{sandbox: tr
 type envOptions struct {
 	sandbox   bool
 	rateLimit bool
+	// webhookKey, when set, mounts the provider webhook endpoint with a
+	// verifier under this signature key.
+	webhookKey string
 }
 
 // newEnv builds a running API with the given options, so tests can exercise
@@ -211,14 +215,19 @@ func newEnv(t *testing.T, opts envOptions) *testEnv {
 	// advance the domain clock by days.
 	sessions := auth.NewManager(repo, 30*24*time.Hour, false, nil)
 
+	var verifier *nomba.WebhookVerifier
+	if opts.webhookKey != "" {
+		verifier = nomba.NewWebhookVerifier([]byte(opts.webhookKey))
+	}
 	api := httpapi.New(httpapi.Config{
-		App:        app,
-		Minter:     minter,
-		Auth:       sessions,
-		Users:      repo,
-		Logger:     logger,
-		FlowSecret: []byte(testLinkTokenSecret),
-		RateLimit:  opts.rateLimit,
+		App:          app,
+		Minter:       minter,
+		Auth:         sessions,
+		Users:        repo,
+		NombaWebhook: verifier,
+		Logger:       logger,
+		FlowSecret:   []byte(testLinkTokenSecret),
+		RateLimit:    opts.rateLimit,
 	})
 	mux := http.NewServeMux()
 	api.Register(mux)

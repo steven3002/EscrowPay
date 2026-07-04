@@ -2,8 +2,10 @@ package pocketapp
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
+	"escrowpay/internal/gateway"
 	"escrowpay/internal/store"
 )
 
@@ -51,6 +53,56 @@ func (a *App) SweepPendingSettlementLegs(ctx context.Context) (int, error) {
 		paid++
 	}
 	return paid, nil
+}
+
+// inflightAlertAge is how long a leg may sit awaiting a provider outcome
+// before each sweep starts flagging it for operators.
+const inflightAlertAge = 10 * time.Minute
+
+// SweepInflightSettlementLegs reconciles legs whose submission ended without a
+// definitive outcome. The provider's payout notifications normally resolve
+// them; when the gateway can answer status queries, this pass also asks it
+// directly, confirming executed legs and releasing provably absent ones back
+// to pending. Legs neither resolves are surfaced by age — never retried
+// blindly, because an ambiguous submission may have moved money.
+func (a *App) SweepInflightSettlementLegs(ctx context.Context) (int, error) {
+	legs, err := a.store.InflightSettlementLegs(ctx)
+	if err != nil || len(legs) == 0 {
+		return 0, err
+	}
+	querier, canQuery := a.gateway.(gateway.StatusQuerier)
+	resolved := 0
+	for _, leg := range legs {
+		if canQuery {
+			status, ref, qerr := querier.PayoutStatus(ctx, leg.IdempotencyKey)
+			if qerr != nil {
+				a.logger.Warn("settlement status query failed",
+					slog.String("leg", leg.IdempotencyKey), slog.String("error", qerr.Error()))
+			} else {
+				switch status {
+				case gateway.PayoutStatusConfirmed:
+					if err := a.store.ConfirmSettlement(ctx, leg.IdempotencyKey, ref); err != nil {
+						return resolved, err
+					}
+					resolved++
+					continue
+				case gateway.PayoutStatusAbsent:
+					if err := a.store.ReleaseSettlementLeg(ctx, leg.IdempotencyKey, "provider has no record of the submission"); err != nil {
+						return resolved, err
+					}
+					resolved++
+					continue
+				}
+			}
+		}
+		if age := a.now().Sub(leg.UpdatedAt); age >= inflightAlertAge {
+			a.logger.Error("settlement leg awaiting provider outcome",
+				slog.String("leg", leg.IdempotencyKey),
+				slog.String("pocket_id", leg.PocketID),
+				slog.Duration("age", age.Truncate(time.Second)))
+		}
+	}
+	return resolved, nil
 }
 
 // drainRule repeatedly claims and advances one due pocket until the scan finds

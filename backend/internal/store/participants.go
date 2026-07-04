@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -130,6 +131,26 @@ func markAcceptedTx(ctx context.Context, tx pgx.Tx, pocketID, role string, now t
 		return false, fmt.Errorf("mark accepted: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// FundingContact returns the buyer's email and display name for payment
+// receipts. Both may be empty: a sandbox demo account has no email, and the
+// checkout caller substitutes its configured fallback.
+func (s *Store) FundingContact(ctx context.Context, pocketID string) (email, displayName string, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(u.email, ''), COALESCE(u.display_name, '')
+		FROM pocket_participants pp
+		JOIN users u ON u.id = pp.user_id
+		WHERE pp.pocket_id = $1 AND pp.role = 'buyer'`,
+		pocketID,
+	).Scan(&email, &displayName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("funding contact: %w", err)
+	}
+	return email, displayName, nil
 }
 
 // roleAccepted reports whether the participant in the given role has accepted.

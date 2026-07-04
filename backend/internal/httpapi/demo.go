@@ -12,11 +12,12 @@ type simulateFundingResponse struct {
 	Status   string `json:"status"`
 }
 
-// handleSimulateFunding drives transition #2 through the mock gateway. It stands
-// in for a real funding webhook and is gated by sandbox mode; the production
-// payment integration replaces it with signed webhook ingestion.
+// handleSimulateFunding drives transition #2 without a provider payment. It
+// stands in for the signed funding webhook and is available only while the
+// sandbox funding shortcut is enabled — deployments on a real gateway keep it
+// off unless explicitly re-enabled as a demo fallback.
 func (a *API) handleSimulateFunding(w http.ResponseWriter, r *http.Request) {
-	if !a.app.Sandbox() {
+	if !a.app.CanSimulateFunding() {
 		a.writeError(w, pocketapp.ErrForbidden)
 		return
 	}

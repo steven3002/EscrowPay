@@ -2,6 +2,7 @@ package pocketapp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -59,10 +60,20 @@ func (a *App) executeEffects(ctx context.Context, pocketID string, out pocket.Ou
 func (a *App) executeEffect(ctx context.Context, pocketID string, buyerTotal int64, e pocket.Effect) error {
 	switch eff := e.(type) {
 	case pocket.CreateFundingLink:
+		rec, err := a.store.GetByID(ctx, pocketID)
+		if err != nil {
+			return err
+		}
+		email, _, err := a.store.FundingContact(ctx, pocketID)
+		if err != nil {
+			return err
+		}
 		link, err := a.gateway.CreateFundingLink(ctx, gateway.CreateFundingLinkRequest{
-			PocketID:   pocketID,
-			AmountKobo: buyerTotal,
-			ExpiresAt:  eff.ExpiresAt,
+			PocketID:      pocketID,
+			ShortCode:     rec.ShortCode,
+			AmountKobo:    buyerTotal,
+			CustomerEmail: email,
+			ExpiresAt:     eff.ExpiresAt,
 		})
 		if err != nil {
 			return err
@@ -148,13 +159,25 @@ func (a *App) paySettlements(ctx context.Context, pocketID string) error {
 	return nil
 }
 
-// payLeg pushes one settlement leg through the gateway under its stable
-// idempotency key, then marks it confirmed. Replaying a leg is safe end to end:
-// the gateway returns the original reference for a seen key, and ConfirmSettlement
-// only advances a leg still pending — so money moves at most once.
+// payLeg pushes one settlement leg through the gateway. The claim protocol
+// bounds every leg to at most one live submission: claim the leg (pending →
+// inflight), call the gateway, confirm on success. A definitive rejection
+// fails the leg; a failure that provably never reached the provider releases
+// it for retry; any ambiguous failure leaves it inflight, where only the
+// provider's payout notification or a status re-query can resolve it. Money
+// therefore moves at most once even against a provider that does not enforce
+// idempotency keys server-side.
 func (a *App) payLeg(ctx context.Context, leg store.SettlementLeg) error {
+	claimed, err := a.store.ClaimSettlementLeg(ctx, leg.IdempotencyKey)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		// Another worker or a provider notification already advanced this leg.
+		return nil
+	}
+
 	var ref string
-	var err error
 	switch leg.Direction {
 	case "payout":
 		ref, err = a.gateway.Payout(ctx, gateway.PayoutRequest{
@@ -172,10 +195,25 @@ func (a *App) payLeg(ctx context.Context, leg store.SettlementLeg) error {
 	default:
 		return fmt.Errorf("unknown settlement direction %q", leg.Direction)
 	}
-	if err != nil {
+
+	switch {
+	case err == nil:
+		return a.store.ConfirmSettlement(ctx, leg.IdempotencyKey, ref)
+	case errors.Is(err, gateway.ErrRejected):
+		if failErr := a.store.FailSettlementLeg(ctx, leg.IdempotencyKey, err.Error()); failErr != nil {
+			return errors.Join(err, failErr)
+		}
+		return err
+	case errors.Is(err, gateway.ErrNotSubmitted):
+		if relErr := a.store.ReleaseSettlementLeg(ctx, leg.IdempotencyKey, err.Error()); relErr != nil {
+			return errors.Join(err, relErr)
+		}
+		return err
+	default:
+		// Ambiguous: the disbursement may have executed. The leg stays
+		// inflight for reconciliation.
 		return err
 	}
-	return a.store.ConfirmSettlement(ctx, leg.IdempotencyKey, ref)
 }
 
 // messageFor renders demo notification copy for a transition's notify kind. It

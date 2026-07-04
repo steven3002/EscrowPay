@@ -22,7 +22,7 @@ const pocketColumns = `
 	inspection_window_minutes, delivery_window_minutes,
 	state, release_code_hash, code_attempts, code_locked,
 	delivery_deadline, settle_after, grace_deadline, funding_expires_at,
-	funding_link_ref, funding_link_url, release_code_enc, created_at`
+	funding_link_ref, funding_link_url, funding_transaction_id, release_code_enc, created_at`
 
 // row is the read interface shared by pool.QueryRow and tx.QueryRow.
 type row interface {
@@ -34,11 +34,11 @@ type row interface {
 // canonical list can reuse the same reader.
 func (s *Store) scanPocket(r row, extra ...any) (PocketRecord, error) {
 	var (
-		rec                                                              PocketRecord
-		structure, creatorRole, mode, state                              string
-		inspectionMin, deliveryMin                                       int
-		deliveryAddress, releaseHash, fundingRef, fundingURL, releaseEnc *string
-		deliveryDeadline, settleAfter, graceDeadline, fundingExpires     *time.Time
+		rec                                                                         PocketRecord
+		structure, creatorRole, mode, state                                         string
+		inspectionMin, deliveryMin                                                  int
+		deliveryAddress, releaseHash, fundingRef, fundingURL, fundingTx, releaseEnc *string
+		deliveryDeadline, settleAfter, graceDeadline, fundingExpires                *time.Time
 	)
 	dest := []any{
 		&rec.ID, &rec.ShortCode, &rec.Version, &structure, &creatorRole, &mode,
@@ -47,7 +47,7 @@ func (s *Store) scanPocket(r row, extra ...any) (PocketRecord, error) {
 		&inspectionMin, &deliveryMin,
 		&state, &releaseHash, &rec.Pocket.CodeAttempts, &rec.Pocket.CodeLocked,
 		&deliveryDeadline, &settleAfter, &graceDeadline, &fundingExpires,
-		&fundingRef, &fundingURL, &releaseEnc, &rec.CreatedAt,
+		&fundingRef, &fundingURL, &fundingTx, &releaseEnc, &rec.CreatedAt,
 	}
 	err := r.Scan(append(dest, extra...)...)
 	if err != nil {
@@ -76,6 +76,7 @@ func (s *Store) scanPocket(r row, extra ...any) (PocketRecord, error) {
 	rec.ReleaseCodeHash = derefStr(releaseHash)
 	rec.FundingLinkRef = derefStr(fundingRef)
 	rec.FundingLinkURL = derefStr(fundingURL)
+	rec.FundingTxID = derefStr(fundingTx)
 	rec.ReleaseCodeEnc = derefStr(releaseEnc)
 	return rec, nil
 }
@@ -88,6 +89,16 @@ func (s *Store) GetByID(ctx context.Context, id string) (PocketRecord, error) {
 // GetByShortCode loads a pocket by its shareable short code.
 func (s *Store) GetByShortCode(ctx context.Context, shortCode string) (PocketRecord, error) {
 	return s.scanPocket(s.pool.QueryRow(ctx, `SELECT `+pocketColumns+` FROM pockets WHERE short_code = $1`, shortCode))
+}
+
+// GetByFundingRef loads the pocket whose funding link was minted under the
+// given gateway order reference. It is how an incoming payment notification is
+// mapped back to the pocket it funds.
+func (s *Store) GetByFundingRef(ctx context.Context, ref string) (PocketRecord, error) {
+	if ref == "" {
+		return PocketRecord{}, ErrNotFound
+	}
+	return s.scanPocket(s.pool.QueryRow(ctx, `SELECT `+pocketColumns+` FROM pockets WHERE funding_link_ref = $1`, ref))
 }
 
 // insertPocketDraftTx inserts a DRAFT pocket and returns its generated id and
@@ -170,6 +181,23 @@ func (s *Store) SetFundingLink(ctx context.Context, id, ref, url string) error {
 		ref, url, id)
 	if err != nil {
 		return fmt.Errorf("set funding link: %w", err)
+	}
+	return nil
+}
+
+// SetFundingTransaction records the provider transaction id of the payment
+// that funded the pocket. It writes only once: replayed notifications for the
+// same funding never overwrite the original payment's identity.
+func (s *Store) SetFundingTransaction(ctx context.Context, id, txID string) error {
+	if txID == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE pockets SET funding_transaction_id = $1, updated_at = now()
+		 WHERE id = $2 AND funding_transaction_id IS NULL`,
+		txID, id)
+	if err != nil {
+		return fmt.Errorf("set funding transaction: %w", err)
 	}
 	return nil
 }

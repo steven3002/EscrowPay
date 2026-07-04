@@ -55,6 +55,35 @@ type config struct {
 	GoogleClientSecret string
 	GoogleRedirectURL  string
 	GoogleIssuer       string
+
+	// GatewayProvider selects the payment rails: "mock" (default, no money
+	// moves) or "nomba" (real provider; sandbox or production per base URL).
+	GatewayProvider string
+	// SimulateFundingEnabled keeps the sandbox funding shortcut available.
+	// It defaults to true on the mock gateway and false on a real one, where
+	// it may be re-enabled explicitly as a demo fallback.
+	SimulateFundingEnabled bool
+	Nomba                  nombaConfig
+}
+
+// nombaConfig carries the Nomba credentials and policy. The parent account id
+// authenticates every call via the accountId header; money operations are
+// scoped to the sub-account.
+type nombaConfig struct {
+	BaseURL               string
+	ClientID              string
+	ClientSecret          string
+	ParentAccountID       string
+	SubAccountID          string
+	SignatureKey          string
+	PublicBaseURL         string
+	FallbackCustomerEmail string
+	PayoutAccountNumber   string
+	PayoutBankCode        string
+	PayoutAccountName     string
+	RefundAccountNumber   string
+	RefundBankCode        string
+	RefundAccountName     string
 }
 
 // devLinkTokenSecret and devReleaseCodeSecret are used only when the
@@ -87,7 +116,27 @@ func loadConfig(logger *slog.Logger) config {
 		GoogleClientSecret:    envOr("GOOGLE_CLIENT_SECRET", ""),
 		GoogleRedirectURL:     envOr("GOOGLE_REDIRECT_URL", ""),
 		GoogleIssuer:          envOr("GOOGLE_ISSUER", ""),
+		GatewayProvider:       envOr("GATEWAY_PROVIDER", "mock"),
+		Nomba: nombaConfig{
+			BaseURL: envOr("NOMBA_BASE_URL", "https://sandbox.nomba.com"),
+			// The credential variables accept the names the Nomba dashboard's
+			// test-credentials export uses, so a pasted .env works unchanged.
+			ClientID:              envOr("NOMBA_CLIENT_ID", envOr("TEST_CREDENTIALS_CLIENT_ID", "")),
+			ClientSecret:          envOr("NOMBA_CLIENT_SECRET", envOr("TEST_CREDENTIALS_CLIENT_SECRET", "")),
+			ParentAccountID:       envOr("NOMBA_PARENT_ACCOUNT_ID", envOr("PARENT_ACCOUNT_ID", "")),
+			SubAccountID:          envOr("NOMBA_SUB_ACCOUNT_ID", envOr("SUB_ACCOUNT_ID", "")),
+			SignatureKey:          envOr("NOMBA_SIGNATURE_KEY", ""),
+			PublicBaseURL:         envOr("PUBLIC_BASE_URL", "http://localhost:3000"),
+			FallbackCustomerEmail: envOr("NOMBA_FALLBACK_CUSTOMER_EMAIL", ""),
+			PayoutAccountNumber:   envOr("NOMBA_PAYOUT_ACCOUNT_NUMBER", ""),
+			PayoutBankCode:        envOr("NOMBA_PAYOUT_BANK_CODE", ""),
+			PayoutAccountName:     envOr("NOMBA_PAYOUT_ACCOUNT_NAME", ""),
+			RefundAccountNumber:   envOr("NOMBA_REFUND_ACCOUNT_NUMBER", ""),
+			RefundBankCode:        envOr("NOMBA_REFUND_BANK_CODE", ""),
+			RefundAccountName:     envOr("NOMBA_REFUND_ACCOUNT_NAME", ""),
+		},
 	}
+	cfg.SimulateFundingEnabled = envBool("SIMULATE_FUNDING_ENABLED", cfg.GatewayProvider == "mock")
 
 	if len(cfg.LinkTokenSecret) == 0 {
 		logger.Warn("LINK_TOKEN_SECRET unset; using an insecure development secret")

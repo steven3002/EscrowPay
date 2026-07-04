@@ -18,6 +18,7 @@ type PocketRecord struct {
 	DeliveryAddress string
 	FundingLinkRef  string
 	FundingLinkURL  string
+	FundingTxID     string // provider transaction id of the funding payment
 	ReleaseCodeHash string
 	ReleaseCodeEnc  string
 	CreatedAt       time.Time

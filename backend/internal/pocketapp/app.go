@@ -42,12 +42,14 @@ type App struct {
 	evidence EvidenceStore
 	logger   *slog.Logger
 
-	releaseCodeSecret     []byte
-	fundingLinkTTL        time.Duration
-	gracePeriod           time.Duration
-	evidenceCaptureWindow time.Duration
-	evidenceMaxBytes      int64
-	sandbox               bool
+	releaseCodeSecret      []byte
+	fundingLinkTTL         time.Duration
+	gracePeriod            time.Duration
+	evidenceCaptureWindow  time.Duration
+	evidenceMaxBytes       int64
+	sandbox                bool
+	realGateway            bool
+	disableSimulateFunding bool
 
 	now func() time.Time
 }
@@ -68,6 +70,14 @@ type Config struct {
 	EvidenceMaxBytes      int64
 	Sandbox               bool
 
+	// RealGateway marks the payment gateway as one that moves actual money,
+	// which surfaces the funding link as a live checkout to buyers.
+	RealGateway bool
+	// DisableSimulateFunding turns the sandbox funding shortcut off even in
+	// sandbox mode. Deployments on a real gateway default it on, keeping the
+	// shortcut available only as an explicitly requested demo fallback.
+	DisableSimulateFunding bool
+
 	// Now is injectable for tests; defaults to time.Now.
 	Now func() time.Time
 }
@@ -83,25 +93,35 @@ func New(cfg Config) *App {
 		logger = slog.Default()
 	}
 	return &App{
-		store:                 cfg.Store,
-		gateway:               cfg.Gateway,
-		notifier:              cfg.Notifier,
-		minter:                cfg.Minter,
-		evidence:              cfg.Evidence,
-		logger:                logger,
-		releaseCodeSecret:     cfg.ReleaseCodeSecret,
-		fundingLinkTTL:        cfg.FundingLinkTTL,
-		gracePeriod:           cfg.GracePeriod,
-		evidenceCaptureWindow: cfg.EvidenceCaptureWindow,
-		evidenceMaxBytes:      cfg.EvidenceMaxBytes,
-		sandbox:               cfg.Sandbox,
-		now:                   now,
+		store:                  cfg.Store,
+		gateway:                cfg.Gateway,
+		notifier:               cfg.Notifier,
+		minter:                 cfg.Minter,
+		evidence:               cfg.Evidence,
+		logger:                 logger,
+		releaseCodeSecret:      cfg.ReleaseCodeSecret,
+		fundingLinkTTL:         cfg.FundingLinkTTL,
+		gracePeriod:            cfg.GracePeriod,
+		evidenceCaptureWindow:  cfg.EvidenceCaptureWindow,
+		evidenceMaxBytes:       cfg.EvidenceMaxBytes,
+		sandbox:                cfg.Sandbox,
+		realGateway:            cfg.RealGateway,
+		disableSimulateFunding: cfg.DisableSimulateFunding,
+		now:                    now,
 	}
 }
 
-// Sandbox reports whether demo-only affordances (simulate-funding, open admin)
-// are enabled.
+// Sandbox reports whether demo-only affordances (demo login, the sandbox
+// funding shortcut) are enabled.
 func (a *App) Sandbox() bool { return a.sandbox }
+
+// RealGateway reports whether the configured gateway moves actual money, in
+// which case funding links are live checkouts a buyer can pay.
+func (a *App) RealGateway() bool { return a.realGateway }
+
+// CanSimulateFunding reports whether the sandbox funding shortcut is
+// available: sandbox mode must be on and the shortcut not disabled.
+func (a *App) CanSimulateFunding() bool { return a.sandbox && !a.disableSimulateFunding }
 
 // EvidenceMaxBytes is the per-upload size cap, exposed so the transport can
 // reject an oversize body before buffering it.

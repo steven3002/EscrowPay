@@ -328,6 +328,7 @@ function WaitingPanel() {
 function PayPanel(props: ActionProps) {
   const { p, refresh } = props;
   const { busy, error, run } = useAction();
+  const checkout = Boolean(p.funding_checkout && p.funding_url);
   return (
     <Card>
       <SectionTitle>Payment</SectionTitle>
@@ -336,17 +337,42 @@ function PayPanel(props: ActionProps) {
         delivery with a Release Code.
       </p>
       {error && <Banner tone="red">{error}</Banner>}
-      <Button
-        tone="primary"
-        disabled={busy}
-        onClick={() => run(async () => {
-          await api.simulateFunding(p.id);
-          await refresh();
-        })}
-      >
-        {busy ? <Spinner /> : `Pay ${formatKobo(p.money.buyer_total_kobo)} (sandbox)`}
-      </Button>
-      <p className="mt-2 text-center text-xs text-muted">Sandbox: no real charge is made.</p>
+      {checkout && (
+        <>
+          <a
+            href={p.funding_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block w-full rounded-xl bg-emerald-600 px-4 py-3 text-center font-semibold text-white transition hover:bg-emerald-500"
+          >
+            Pay {formatKobo(p.money.buyer_total_kobo)} securely
+          </a>
+          <p className="mt-2 text-center text-xs text-muted">
+            You&rsquo;ll complete payment on the bank&rsquo;s secure checkout. This page updates
+            automatically once your money is secured.
+          </p>
+        </>
+      )}
+      {p.simulate_funding && (
+        <div className={checkout ? "mt-3" : ""}>
+          <Button
+            tone={checkout ? "neutral" : "primary"}
+            disabled={busy}
+            onClick={() => run(async () => {
+              await api.simulateFunding(p.id);
+              await refresh();
+            })}
+          >
+            {busy ? <Spinner /> : `Pay ${formatKobo(p.money.buyer_total_kobo)} (sandbox)`}
+          </Button>
+          <p className="mt-2 text-center text-xs text-muted">Sandbox: no real charge is made.</p>
+        </div>
+      )}
+      {!checkout && !p.simulate_funding && (
+        <Banner tone="blue">
+          Your funding link is being prepared. Refresh in a moment to pay.
+        </Banner>
+      )}
       <CancelButton {...props} inline />
     </Card>
   );

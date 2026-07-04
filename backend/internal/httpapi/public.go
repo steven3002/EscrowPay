@@ -18,7 +18,7 @@ func (a *API) handlePublicView(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, buildPocketView(rec, parts, role))
+	writeJSON(w, http.StatusOK, a.pocketView(rec, parts, role))
 }
 
 // handleClaim binds the signed-in account to the role the link token names.
@@ -101,5 +101,5 @@ func (a *API) respondView(w http.ResponseWriter, r *http.Request, pocketID, role
 		a.writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, buildPocketView(rec, parts, role))
+	writeJSON(w, http.StatusOK, a.pocketView(rec, parts, role))
 }

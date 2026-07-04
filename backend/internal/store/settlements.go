@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,11 +21,12 @@ type SettlementLeg struct {
 	BeneficiaryUser string // optional; empty until a payout account is linked
 	AmountKobo      int64
 	IdempotencyKey  string
+	UpdatedAt       time.Time
 }
 
 const settlementLegColumns = `
 	pocket_id, direction, beneficiary_role,
-	COALESCE(beneficiary_user_id::text, ''), amount_kobo, idempotency_key`
+	COALESCE(beneficiary_user_id::text, ''), amount_kobo, idempotency_key, updated_at`
 
 // recordSettlementLegsTx persists a pending settlement leg for each money effect
 // the transition returned, inside the transition's own transaction. Recording
@@ -113,7 +115,7 @@ func scanSettlementLegs(rows pgx.Rows) ([]SettlementLeg, error) {
 	for rows.Next() {
 		var leg SettlementLeg
 		if err := rows.Scan(&leg.PocketID, &leg.Direction, &leg.BeneficiaryRole,
-			&leg.BeneficiaryUser, &leg.AmountKobo, &leg.IdempotencyKey); err != nil {
+			&leg.BeneficiaryUser, &leg.AmountKobo, &leg.IdempotencyKey, &leg.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan settlement leg: %w", err)
 		}
 		out = append(out, leg)
@@ -121,13 +123,71 @@ func scanSettlementLegs(rows pgx.Rows) ([]SettlementLeg, error) {
 	return out, rows.Err()
 }
 
+// ClaimSettlementLeg advances one leg from pending to inflight, returning
+// whether this caller won the claim. Claiming before the gateway call is what
+// bounds disbursement to at most one submission: a leg that is inflight is
+// never resubmitted automatically — only a provider notification, a status
+// re-query, or an explicit release moves it on.
+func (s *Store) ClaimSettlementLeg(ctx context.Context, idempotencyKey string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE settlements SET status = 'inflight', updated_at = now()
+		 WHERE idempotency_key = $1 AND status = 'pending'`,
+		idempotencyKey)
+	if err != nil {
+		return false, fmt.Errorf("claim settlement leg: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// ReleaseSettlementLeg returns an inflight leg to pending for a later retry.
+// Callers may only release when the submission definitively did not happen —
+// releasing after an ambiguous failure would license a double disbursement.
+func (s *Store) ReleaseSettlementLeg(ctx context.Context, idempotencyKey, reason string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE settlements SET status = 'pending', last_error = $1, updated_at = now()
+		 WHERE idempotency_key = $2 AND status = 'inflight'`,
+		reason, idempotencyKey)
+	if err != nil {
+		return fmt.Errorf("release settlement leg: %w", err)
+	}
+	return nil
+}
+
+// FailSettlementLeg marks a leg terminally failed with the provider's reason.
+// Failed legs are surfaced for operator attention and never retried blindly.
+func (s *Store) FailSettlementLeg(ctx context.Context, idempotencyKey, reason string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE settlements SET status = 'failed', last_error = $1, updated_at = now()
+		 WHERE idempotency_key = $2 AND status IN ('pending', 'inflight', 'confirmed')`,
+		reason, idempotencyKey)
+	if err != nil {
+		return fmt.Errorf("fail settlement leg: %w", err)
+	}
+	return nil
+}
+
+// InflightSettlementLegs returns every leg awaiting a definitive outcome,
+// oldest first, for the reconciliation pass.
+func (s *Store) InflightSettlementLegs(ctx context.Context) ([]SettlementLeg, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+settlementLegColumns+` FROM settlements WHERE status = 'inflight' ORDER BY created_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("query inflight settlements: %w", err)
+	}
+	defer rows.Close()
+	return scanSettlementLegs(rows)
+}
+
 // ConfirmSettlement marks a leg confirmed and records its gateway reference. It
 // is idempotent: re-confirming an already-confirmed leg is a harmless no-op
-// because the disburser only revisits legs still in 'pending'.
+// because it only advances legs still awaiting an outcome (pending or
+// inflight). It doubles as the reconciliation hook for provider payout
+// notifications, which may arrive before or after the submitting process
+// recorded its own confirmation.
 func (s *Store) ConfirmSettlement(ctx context.Context, idempotencyKey, gatewayRef string) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE settlements SET status = 'confirmed', gateway_ref = $1, updated_at = now()
-		 WHERE idempotency_key = $2 AND status = 'pending'`,
+		 WHERE idempotency_key = $2 AND status IN ('pending', 'inflight')`,
 		gatewayRef, idempotencyKey)
 	if err != nil {
 		return fmt.Errorf("confirm settlement: %w", err)
