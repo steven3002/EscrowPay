@@ -29,9 +29,14 @@ type pocketView struct {
 	// FundingCheckout marks funding_url as a live provider checkout the buyer
 	// can actually pay; SimulateFunding offers the sandbox funding shortcut.
 	// Both are buyer-only affordances of the CREATED state.
-	FundingCheckout bool      `json:"funding_checkout,omitempty"`
-	SimulateFunding bool      `json:"simulate_funding,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	FundingCheckout bool `json:"funding_checkout,omitempty"`
+	SimulateFunding bool `json:"simulate_funding,omitempty"`
+	// PendingInvites names the counterparty seats still open to a fresh
+	// invitation, scoped to what the viewing role may see. It tells the client
+	// which invite links are still worth re-sharing; the links themselves live
+	// only in the sharer's browser, since the server keeps just their hashes.
+	PendingInvites []string  `json:"pending_invites,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // viewerView tells the requesting participant where they stand in the
@@ -112,7 +117,46 @@ func buildPocketView(rec store.PocketRecord, parts []store.ParticipantRecord, ro
 	case pocket.RoleVendor:
 		v.Counterparty = counterpartyOf(parts, pocket.RoleBuyer, true, rec.DeliveryAddress, p.State)
 	}
+	v.PendingInvites = pendingInvites(parts, role, p.Structure)
 	return v
+}
+
+// pendingInvites lists the counterparty seats still open to a fresh invitation,
+// scoped to what the viewing role may know about. It powers the "copy the link
+// again" affordance: the creator or broker who minted a seat's invitation can
+// re-share it until that seat is claimed. A brokered buyer transacts with the
+// broker's storefront and must not learn a separate vendor seat exists, so that
+// seat is never surfaced to them.
+func pendingInvites(parts []store.ParticipantRecord, viewer string, structure pocket.Structure) []string {
+	var targets []pocket.Role
+	switch pocket.Role(viewer) {
+	case pocket.RoleBroker:
+		targets = []pocket.Role{pocket.RoleBuyer, pocket.RoleVendor}
+	case pocket.RoleVendor:
+		targets = []pocket.Role{pocket.RoleBuyer}
+	case pocket.RoleBuyer:
+		if structure == pocket.StructureP2P {
+			targets = []pocket.Role{pocket.RoleVendor}
+		}
+	}
+	var out []string
+	for _, role := range targets {
+		if seatUnclaimed(parts, role) {
+			out = append(out, string(role))
+		}
+	}
+	return out
+}
+
+// seatUnclaimed reports whether the named seat exists but no account has taken
+// it yet — the window in which its invitation link is still live.
+func seatUnclaimed(parts []store.ParticipantRecord, role pocket.Role) bool {
+	for _, p := range parts {
+		if p.Role == string(role) {
+			return p.UserID == ""
+		}
+	}
+	return false
 }
 
 // viewerOf reports the requesting participant's claim/accept status.

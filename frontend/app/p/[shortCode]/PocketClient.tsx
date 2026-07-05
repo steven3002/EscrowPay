@@ -9,9 +9,11 @@ import {
   type CodeEntryResult,
   type DisputeView,
   type PocketView,
+  type Role,
 } from "@/lib/api";
 import { formatKobo } from "@/lib/format";
 import { remember } from "@/lib/recent";
+import { getInvite, rememberInvite } from "@/lib/invites";
 import { useMe } from "@/lib/useMe";
 import { usePolling } from "@/lib/usePolling";
 import { StateBadge } from "@/components/StateBadge";
@@ -112,6 +114,7 @@ export default function PocketClient({ shortCode, token }: { shortCode: string; 
         <MoneyCard p={pocket} />
         <TimersCard p={pocket} />
         <Actions p={pocket} shortCode={shortCode} token={token} refresh={refresh} />
+        <PendingInvites p={pocket} />
       </div>
     </Page>
   );
@@ -369,6 +372,9 @@ function BrokerConvertPanel({ p, shortCode, token }: ActionProps) {
           onClick={() =>
             run(async () => {
               const r = await api.claimBroker(shortCode, token, vendorKobo);
+              // Keep the seller's fresh link so the broker can copy it again from
+              // their broker view — the server only stored its hash.
+              rememberInvite(shortCode, "vendor", r.vendor_share_url);
               setResult(r);
             })
           }
@@ -428,6 +434,38 @@ function InlineShare({ path }: { path: string }) {
         {copied ? "Copied ✓" : "Copy link"}
       </Button>
     </div>
+  );
+}
+
+// PendingInvites re-offers the share link for any counterparty seat that is
+// still open (per the server's pending_invites) and whose link this browser
+// minted. It's the "copy the link again, just in case" affordance for the
+// creator or broker: the same link they sent, re-copyable while unclaimed. It
+// renders nothing once every seat is claimed, or on a device that never held
+// the links (the server keeps only their hashes, so it can't reissue them).
+function PendingInvites({ p }: { p: PocketView }) {
+  const invites = (p.pending_invites ?? [])
+    .map((role) => ({ role, path: getInvite(p.short_code, role) }))
+    .filter((x): x is { role: Role; path: string } => x.path !== null);
+  if (invites.length === 0) return null;
+  return (
+    <Card>
+      <SectionTitle>Invite links</SectionTitle>
+      <p className="mb-4 text-sm text-muted">
+        {invites.length > 1
+          ? "These people haven't joined yet."
+          : "This person hasn't joined yet."}{" "}
+        Copy the link to send it again — it stays valid until they claim their seat.
+      </p>
+      <div className="grid gap-4">
+        {invites.map(({ role, path }) => (
+          <div key={role}>
+            <p className="mb-2 text-sm font-medium capitalize">Send to the {role}</p>
+            <InlineShare path={path} />
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

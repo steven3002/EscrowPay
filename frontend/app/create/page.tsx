@@ -19,6 +19,7 @@ import {
 import { api, ApiError, type CreateResponse, type FeeQuote, type Role, type Structure } from "@/lib/api";
 import { formatKobo } from "@/lib/format";
 import { remember } from "@/lib/recent";
+import { rememberInvite } from "@/lib/invites";
 import { useMe } from "@/lib/useMe";
 
 const CATEGORIES = ["electronics", "phones", "fashion", "beauty", "home", "general"];
@@ -112,6 +113,9 @@ function CreateScreen() {
           item: item.trim(),
         });
       }
+      // Stash the counterparty invitation(s) so the creator can copy the same
+      // link again later from their pocket page — the server never re-serves it.
+      stashInvites(res);
       setResult(res);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong.");
@@ -329,6 +333,18 @@ function ResultPanel({
       </div>
     </Page>
   );
+}
+
+// stashInvites remembers the share path for each counterparty seat the creator
+// must forward, so the pocket page can offer a "copy again" for any that haven't
+// been claimed yet. A brokered creator forwards two links; a p2p creator, one.
+function stashInvites(res: CreateResponse) {
+  const roles: Role[] = res.creator_role === "broker" ? ["vendor", "buyer"] : [];
+  if (res.counterparty_role) roles.push(res.counterparty_role);
+  for (const role of roles) {
+    const token = res.tokens[role];
+    if (token) rememberInvite(res.short_code, role, `/p/${res.short_code}?t=${token}`);
+  }
 }
 
 function BackLink() {

@@ -54,6 +54,12 @@ export interface PocketView {
   money: Money;
   counterparty?: Counterparty;
   timers: Timers;
+  /**
+   * Counterparty seats still open to a fresh invitation, scoped to what this
+   * role may see. The client re-offers a copyable link for each seat it minted
+   * and still holds locally (see lib/invites).
+   */
+  pending_invites?: Role[];
   funding_url?: string;
   /** funding_url is a live bank checkout the buyer can pay. */
   funding_checkout?: boolean;
