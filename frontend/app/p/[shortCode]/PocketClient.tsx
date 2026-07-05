@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   api,
   ApiError,
+  type ClaimBrokerResponse,
   type CodeEntryResult,
   type DisputeView,
   type PocketView,
@@ -219,7 +220,11 @@ function Actions(props: ActionProps) {
   }
 
   if (p.state === "DRAFT") {
-    return p.you.accepted ? <WaitingPanel /> : <AcceptPanel {...props} />;
+    if (p.you.accepted) return <WaitingPanel />;
+    // An unclaimed vendor seat on a p2p pocket is a buyer-created invitation:
+    // the recipient may be the seller, or a broker connecting the buyer to one.
+    const canBroker = p.structure === "p2p" && p.your_role === "vendor" && !p.you.claimed;
+    return canBroker ? <VendorInvitePanel {...props} /> : <AcceptPanel {...props} />;
   }
   if (p.state === "CREATED") {
     return isBuyer ? <PayPanel {...props} /> : <AwaitPaymentPanel {...props} />;
@@ -292,6 +297,140 @@ function AcceptPanel({ p, shortCode, token, refresh }: ActionProps) {
   );
 }
 
+// VendorInvitePanel is shown to whoever opens a buyer-created vendor
+// invitation. They may be the seller (accept the seat) or a broker who will
+// connect the buyer to a seller and keep a commission.
+function VendorInvitePanel(props: ActionProps) {
+  const [mode, setMode] = useState<"choose" | "seller" | "broker">("choose");
+  if (mode === "seller") return <AcceptPanel {...props} />;
+  if (mode === "broker") return <BrokerConvertPanel {...props} />;
+  return (
+    <Card>
+      <SectionTitle>How are you involved?</SectionTitle>
+      <p className="mb-4 text-sm text-muted">
+        The buyer sent you this deal. Are you selling the item yourself, or connecting them to a
+        seller as a broker?
+      </p>
+      <div className="grid gap-3">
+        <Button tone="primary" onClick={() => setMode("seller")}>
+          I&rsquo;m the seller
+        </Button>
+        <Button tone="neutral" onClick={() => setMode("broker")}>
+          I&rsquo;m a broker — I&rsquo;ll connect a seller
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+// BrokerConvertPanel turns the buyer-created p2p pocket into a brokered one:
+// the broker names the seller's cut, keeps the rest as commission, and receives
+// a fresh seller link to forward. The buyer's total is unchanged.
+function BrokerConvertPanel({ p, shortCode, token }: ActionProps) {
+  const itemKobo = p.money.amount_kobo ?? 0;
+  const [vendorNaira, setVendorNaira] = useState("");
+  const [result, setResult] = useState<ClaimBrokerResponse | null>(null);
+  const { busy, error, run } = useAction();
+  const vendorKobo = Math.round(Number(vendorNaira || 0) * 100);
+  const commissionKobo = itemKobo - vendorKobo;
+  const valid = vendorKobo > 0 && vendorKobo < itemKobo;
+
+  if (result) {
+    return <BrokerConvertSuccess shortCode={shortCode} result={result} />;
+  }
+  return (
+    <Card>
+      <SectionTitle>Broker this deal</SectionTitle>
+      <p className="mb-4 text-sm text-muted">
+        Set what the seller receives. The rest of the item price is your commission — the buyer pays
+        exactly the same total either way, and never sees the split.
+      </p>
+      <Row label="Item price" value={formatKobo(itemKobo)} />
+      <div className="my-3">
+        <Field label="Seller receives (₦)">
+          <Input
+            inputMode="decimal"
+            value={vendorNaira}
+            onChange={(e) => setVendorNaira(e.target.value)}
+            placeholder={itemKobo ? String(Math.round((itemKobo * 0.8) / 100)) : "8000"}
+          />
+        </Field>
+      </div>
+      {valid && <Row label="Your commission" value={<strong>{formatKobo(commissionKobo)}</strong>} />}
+      {error && (
+        <div className="mt-3">
+          <Banner tone="red">{error}</Banner>
+        </div>
+      )}
+      <div className="mt-4">
+        <Button
+          tone="primary"
+          disabled={busy || !valid}
+          onClick={() =>
+            run(async () => {
+              const r = await api.claimBroker(shortCode, token, vendorKobo);
+              setResult(r);
+            })
+          }
+        >
+          {busy ? <Spinner /> : "Create broker deal & get seller link"}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+function BrokerConvertSuccess({
+  shortCode,
+  result,
+}: {
+  shortCode: string;
+  result: ClaimBrokerResponse;
+}) {
+  return (
+    <Card>
+      <SectionTitle>You&rsquo;re the broker</SectionTitle>
+      <Banner tone="emerald">
+        Deal set. Send the seller their link — the buyer&rsquo;s money stays protected the same way.
+      </Banner>
+      <div className="mt-4">
+        <p className="mb-2 text-sm font-medium">Send to the seller</p>
+        <InlineShare path={result.vendor_share_url} />
+      </div>
+      <div className="mt-4">
+        <LinkButton href={`/p/${shortCode}`} tone="primary">
+          Open my broker view
+        </LinkButton>
+      </div>
+    </Card>
+  );
+}
+
+// InlineShare renders a copyable absolute URL for a share path.
+function InlineShare({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const full = typeof window !== "undefined" ? window.location.origin + path : path;
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(full);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable; the link is still selectable */
+    }
+  }
+  return (
+    <div className="grid gap-2">
+      <div className="break-all rounded-xl border border-border bg-surface-muted px-3 py-2 font-mono text-xs">
+        {full}
+      </div>
+      <Button tone="neutral" onClick={copy} type="button">
+        {copied ? "Copied ✓" : "Copy link"}
+      </Button>
+    </div>
+  );
+}
+
 function BrokerPanel({ p }: { p: PocketView }) {
   const messages: Partial<Record<string, { tone: "emerald" | "amber" | "red" | "blue" | "zinc"; text: string }>> = {
     DRAFT: { tone: "blue", text: "Waiting for the vendor and buyer to accept your terms." },
@@ -326,9 +465,38 @@ function WaitingPanel() {
 }
 
 function PayPanel(props: ActionProps) {
-  const { p, refresh } = props;
+  const { p, shortCode, token, refresh } = props;
   const { busy, error, run } = useAction();
   const checkout = Boolean(p.funding_checkout && p.funding_url);
+
+  // A real checkout confirms payment out-of-band: the provider's notification
+  // may lag or never arrive, so while the buyer is on this screen we actively
+  // ask the backend to verify the payment — immediately, on an interval, and
+  // the moment the tab regains focus (returning from the checkout tab). When it
+  // reports funded, refresh flips the screen out of the pay state.
+  const [verifying, setVerifying] = useState(false);
+  useEffect(() => {
+    if (!checkout) return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const r = await api.verifyFunding(shortCode, token);
+        if (!cancelled && r.funded) await refresh();
+      } catch {
+        /* the pocket poll remains the backstop */
+      }
+    };
+    check();
+    const id = setInterval(check, 5000);
+    const onFocus = () => check();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [checkout, shortCode, token, refresh]);
+
   return (
     <Card>
       <SectionTitle>Payment</SectionTitle>
@@ -347,9 +515,28 @@ function PayPanel(props: ActionProps) {
           >
             Pay {formatKobo(p.money.buyer_total_kobo)} securely
           </a>
+          <div className="mt-3">
+            <Button
+              tone="neutral"
+              disabled={verifying}
+              onClick={() =>
+                run(async () => {
+                  setVerifying(true);
+                  try {
+                    const r = await api.verifyFunding(shortCode, token);
+                    if (r.funded) await refresh();
+                  } finally {
+                    setVerifying(false);
+                  }
+                })
+              }
+            >
+              {verifying ? <Spinner /> : "I've paid — check now"}
+            </Button>
+          </div>
           <p className="mt-2 text-center text-xs text-muted">
             You&rsquo;ll complete payment on the bank&rsquo;s secure checkout. This page updates
-            automatically once your money is secured.
+            automatically once your money is secured — or tap the button above if it doesn&rsquo;t.
           </p>
         </>
       )}

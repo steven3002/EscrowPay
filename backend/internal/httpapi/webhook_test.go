@@ -142,7 +142,7 @@ func pocketState(t *testing.T, e *testEnv, id string) string {
 func TestWebhookFundsPocketExactlyOnce(t *testing.T) {
 	e := newWebhookEnv(t)
 	_, cr, ref := createdPocketWithRef(t, e)
-	ev := paymentFor(ref, "API-CHECKOUT-A1", "10200.00")
+	ev := paymentFor(ref, "API-CHECKOUT-A1", "10100.00")
 
 	status, data := deliver(t, e, ev, testWebhookKey)
 	if status != 200 {
@@ -200,7 +200,7 @@ func TestWebhookFundsPocketBySubmittedReference(t *testing.T) {
 	if submitted == ref {
 		t.Fatalf("test premise broken: stored ref %q equals submitted ref", ref)
 	}
-	status, data := deliver(t, e, paymentFor(submitted, "API-CHECKOUT-A2", "10200.00"), testWebhookKey)
+	status, data := deliver(t, e, paymentFor(submitted, "API-CHECKOUT-A2", "10100.00"), testWebhookKey)
 	if status != 200 {
 		t.Fatalf("webhook: status %d, body %s", status, data)
 	}
@@ -212,7 +212,7 @@ func TestWebhookFundsPocketBySubmittedReference(t *testing.T) {
 func TestWebhookForgedSignatureRejected(t *testing.T) {
 	e := newWebhookEnv(t)
 	_, cr, ref := createdPocketWithRef(t, e)
-	ev := paymentFor(ref, "API-CHECKOUT-B1", "10200.00")
+	ev := paymentFor(ref, "API-CHECKOUT-B1", "10100.00")
 
 	status, _ := deliver(t, e, ev, "attacker-key")
 	if status != 401 {
@@ -233,7 +233,7 @@ func TestWebhookForgedSignatureRejected(t *testing.T) {
 func TestWebhookUnderpaymentDoesNotFund(t *testing.T) {
 	e := newWebhookEnv(t)
 	_, cr, ref := createdPocketWithRef(t, e)
-	ev := paymentFor(ref, "API-CHECKOUT-C1", "10199.99")
+	ev := paymentFor(ref, "API-CHECKOUT-C1", "10099.99")
 
 	status, _ := deliver(t, e, ev, testWebhookKey)
 	if status != 200 {
@@ -257,7 +257,7 @@ func TestWebhookUnderpaymentDoesNotFund(t *testing.T) {
 
 func TestWebhookUnknownOrderReferenceIsAcknowledged(t *testing.T) {
 	e := newWebhookEnv(t)
-	ev := paymentFor("escrowpay-no-such-pocket", "API-CHECKOUT-D1", "10200.00")
+	ev := paymentFor("escrowpay-no-such-pocket", "API-CHECKOUT-D1", "10100.00")
 
 	status, _ := deliver(t, e, ev, testWebhookKey)
 	if status != 200 {

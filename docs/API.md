@@ -76,15 +76,18 @@ session), `admin` (admin session).
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET` | `/api/me/pockets` | session | Every pocket the account participates in, role-scoped per row |
+| `GET` | `/api/fees?goods_kobo=` | public | Protection Premium quote for a goods value → `{goods_kobo, premium_kobo, buyer_total_kobo}` |
 
 ### Pocket lifecycle
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| `POST` | `/api/pockets` | session | Create a pocket (terms + structure); returns share links |
+| `POST` | `/api/pockets` | session | Create a pocket (terms + structure); returns share links. The Protection Premium is computed server-side and any submitted value is ignored |
 | `GET`  | `/api/p/{shortCode}` | invite | Role-scoped view of a pocket |
 | `POST` | `/api/p/{shortCode}/claim` | session + invite | Bind the caller's account to the invited role |
+| `POST` | `/api/p/{shortCode}/claim-broker` | session + vendor invite | Convert a buyer-created p2p pocket to brokered: caller becomes the broker with `{vendor_amount_kobo}`, receives a fresh vendor link to forward |
 | `POST` | `/api/p/{shortCode}/accept` | invite | Accept terms (buyer supplies delivery address); may fund transition #1 |
+| `POST` | `/api/p/{shortCode}/verify-funding` | invite | Ask the gateway whether the funding order is paid and credit it (#2) if so; idempotent |
 | `POST` | `/api/p/{shortCode}/cancel` | invite | Cancel/refund per current state (#4 / #5) |
 
 ### Delivery & settlement
@@ -216,3 +219,11 @@ Redeliveries and replays are no-ops. Events the current build cannot map
 (unknown reference, underpayment, a pocket already closed) are acknowledged
 (`200`) with the raw payload retained for operator review, but not marked
 processed. The endpoint returns non-`2xx` only to request a provider retry.
+
+**Pull-side confirmation.** The webhook is not the only way funding confirms.
+`POST /api/p/{shortCode}/verify-funding` asks the gateway directly whether the
+order was paid and, if so, credits it through the *same* idempotent path — so a
+payment confirms even when no webhook is configured or a notification is lost.
+A background sweep runs the same check over open pockets. Both routes and the
+webhook converge on one funding-credit path, so a pocket funds at most once
+however the confirmation arrives.

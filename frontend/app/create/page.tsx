@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import {
   Banner,
   Button,
@@ -16,7 +16,7 @@ import {
   SectionTitle,
   Spinner,
 } from "@/components/ui";
-import { api, ApiError, type CreateResponse, type Role, type Structure } from "@/lib/api";
+import { api, ApiError, type CreateResponse, type FeeQuote, type Role, type Structure } from "@/lib/api";
 import { formatKobo } from "@/lib/format";
 import { remember } from "@/lib/recent";
 import { useMe } from "@/lib/useMe";
@@ -38,7 +38,6 @@ function CreateScreen() {
   const [category, setCategory] = useState("electronics");
   const [amountNaira, setAmountNaira] = useState("");
   const [commissionNaira, setCommissionNaira] = useState("");
-  const [premiumNaira, setPremiumNaira] = useState("");
   const [mode, setMode] = useState<"cooldown" | "instant">("cooldown");
   const [inspectionHours, setInspectionHours] = useState("24");
   const [deliveryHours, setDeliveryHours] = useState("48");
@@ -61,11 +60,28 @@ function CreateScreen() {
   const effectiveCreatorRole: Role = brokered ? "broker" : creatorRole;
   const amountKobo = Math.round(Number(amountNaira || 0) * 100);
   const commissionKobo = brokered ? Math.round(Number(commissionNaira || 0) * 100) : 0;
-  const premiumKobo = Math.round(Number(premiumNaira || 0) * 100);
-  const suggestedPremium = useMemo(
-    () => (amountKobo > 0 ? Math.max(5000, Math.round((amountKobo + commissionKobo) * 0.02)) : 0),
-    [amountKobo, commissionKobo],
-  );
+  const goodsKobo = amountKobo + commissionKobo;
+
+  // The Protection fee is platform policy, computed by the backend from the
+  // goods value. Fetch it (debounced) so the buyer total shown here is exact —
+  // creation recomputes it server-side regardless.
+  const [quote, setQuote] = useState<FeeQuote | null>(null);
+  useEffect(() => {
+    if (goodsKobo <= 0) return;
+    const id = setTimeout(() => {
+      // setState lands in the awaited callback, not synchronously in the effect.
+      api
+        .feeQuote(goodsKobo)
+        .then((q) => setQuote(q))
+        .catch(() => undefined);
+    }, 350);
+    return () => clearTimeout(id);
+  }, [goodsKobo]);
+
+  // Only trust the quote when it matches the current goods value; a stale one
+  // (mid-edit) shows as still calculating.
+  const premiumKobo = quote && quote.goods_kobo === goodsKobo ? quote.premium_kobo : null;
+  const buyerTotalKobo = premiumKobo === null ? null : goodsKobo + premiumKobo;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -83,7 +99,6 @@ function CreateScreen() {
         delivery_window_minutes: Number(deliveryHours || 0) * 60,
         amount_kobo: amountKobo,
         commission_kobo: commissionKobo,
-        premium_kobo: premiumKobo,
         item_description: item.trim(),
         category,
       });
@@ -185,32 +200,12 @@ function CreateScreen() {
           <Field label={brokered ? "Vendor gets (₦)" : "Amount (₦)"}>
             <Input inputMode="decimal" value={amountNaira} onChange={(e) => setAmountNaira(e.target.value)} placeholder="10000" />
           </Field>
-          {brokered ? (
+          {brokered && (
             <Field label="Your commission (₦)">
               <Input inputMode="decimal" value={commissionNaira} onChange={(e) => setCommissionNaira(e.target.value)} placeholder="1500" />
             </Field>
-          ) : (
-            <Field label="Protection fee (₦)">
-              <Input
-                inputMode="decimal"
-                value={premiumNaira}
-                onChange={(e) => setPremiumNaira(e.target.value)}
-                placeholder={suggestedPremium ? String(suggestedPremium / 100) : "200"}
-              />
-            </Field>
           )}
         </div>
-
-        {brokered && (
-          <Field label="Protection fee (₦)">
-            <Input
-              inputMode="decimal"
-              value={premiumNaira}
-              onChange={(e) => setPremiumNaira(e.target.value)}
-              placeholder={suggestedPremium ? String(suggestedPremium / 100) : "200"}
-            />
-          </Field>
-        )}
 
         <Field label="Protection mode">
           <Select value={mode} onChange={(e) => setMode(e.target.value as "cooldown" | "instant")}>
@@ -234,9 +229,19 @@ function CreateScreen() {
           <Card className="!bg-surface-muted !shadow-none">
             <Row label={brokered ? "Vendor allocation" : "Item amount"} value={formatKobo(amountKobo)} />
             {brokered && <Row label="Your commission" value={formatKobo(commissionKobo)} />}
-            <Row label="Protection fee" value={formatKobo(premiumKobo)} />
+            <Row
+              label="Protection fee"
+              value={premiumKobo === null ? "Calculating…" : formatKobo(premiumKobo)}
+            />
             <div className="my-1 border-t border-border" />
-            <Row label="Buyer pays" value={<strong>{formatKobo(amountKobo + commissionKobo + premiumKobo)}</strong>} />
+            <Row
+              label="Buyer pays"
+              value={<strong>{buyerTotalKobo === null ? "—" : formatKobo(buyerTotalKobo)}</strong>}
+            />
+            <p className="mt-2 text-xs text-muted">
+              The protection fee is set by EscrowPay from the item price — it&rsquo;s not negotiable
+              and covers the escrow guarantee.
+            </p>
           </Card>
         )}
 
@@ -302,6 +307,13 @@ function ResultPanel({
         <Card className="mb-4">
           <SectionTitle>Send this to the {result.counterparty_role}</SectionTitle>
           <ShareLink path={`/p/${result.short_code}?t=${result.tokens[result.counterparty_role ?? "buyer"]}`} />
+          {creatorRole === "buyer" && (
+            <p className="mt-3 text-xs text-muted">
+              Not buying direct? Whoever you send this to can also step in as a broker — they set a
+              seller&rsquo;s cut, keep a commission, and pass a fresh link to the real seller. Your
+              total never changes.
+            </p>
+          )}
         </Card>
       )}
 

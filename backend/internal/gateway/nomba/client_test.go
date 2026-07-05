@@ -26,11 +26,14 @@ type fakeNomba struct {
 	transfers      atomic.Int64
 	transferStatus string
 	failTransfer   int // HTTP status to fail transfers with; 0 = succeed
+	// paidOrders maps an order reference to the naira-decimal amount the
+	// transaction lookup should report as paid; absent references are unpaid.
+	paidOrders map[string]string
 }
 
 func newFakeNomba(t *testing.T) (*fakeNomba, *httptest.Server) {
 	t.Helper()
-	f := &fakeNomba{t: t, mux: http.NewServeMux(), transferStatus: "SUCCESS"}
+	f := &fakeNomba{t: t, mux: http.NewServeMux(), transferStatus: "SUCCESS", paidOrders: map[string]string{}}
 
 	f.mux.HandleFunc("POST /v1/auth/token/issue", func(w http.ResponseWriter, r *http.Request) {
 		f.checkCommonHeaders(r, false)
@@ -72,6 +75,28 @@ func newFakeNomba(t *testing.T) (*fakeNomba, *httptest.Server) {
 		f.respond(w, map[string]any{
 			"checkoutLink":   "https://checkout.test/pay/" + body.Order.OrderReference,
 			"orderReference": fmt.Sprintf("provider-ref-%d", n),
+		})
+	})
+
+	f.mux.HandleFunc("GET /v1/checkout/transaction", func(w http.ResponseWriter, r *http.Request) {
+		f.checkCommonHeaders(r, true)
+		if r.URL.Query().Get("idType") != "ORDER_REFERENCE" {
+			f.t.Errorf("idType = %q", r.URL.Query().Get("idType"))
+		}
+		id := r.URL.Query().Get("id")
+		if paid, ok := f.paidOrders[id]; ok {
+			f.respond(w, map[string]any{
+				"success": true,
+				"order":   map[string]any{"orderReference": id, "amount": paid},
+				"transactionDetails": map[string]any{
+					"paymentReference": "PAY-" + id, "paymentVendorReference": "vref-" + id,
+				},
+			})
+			return
+		}
+		f.respond(w, map[string]any{
+			"success": false,
+			"message": "No transaction found for the provided orderId/orderReference",
 		})
 	})
 
@@ -308,6 +333,51 @@ func TestNairaAmountFormatting(t *testing.T) {
 	for kobo, want := range cases {
 		if got := nairaAmount(kobo); got != want {
 			t.Errorf("nairaAmount(%d) = %q, want %q", kobo, got, want)
+		}
+	}
+}
+
+func TestVerifyFunding(t *testing.T) {
+	f, srv := newFakeNomba(t)
+	c := testClient(t, srv.URL)
+	ctx := context.Background()
+
+	// An unpaid order reports not-paid without error.
+	status, err := c.VerifyFunding(ctx, "escrowpay-unpaid")
+	if err != nil {
+		t.Fatalf("verify unpaid: %v", err)
+	}
+	if status.Paid {
+		t.Fatalf("unpaid order reported paid: %+v", status)
+	}
+
+	// A paid order reports the payment reference and amount in kobo.
+	f.paidOrders["provider-ref-9"] = "10100.00"
+	status, err = c.VerifyFunding(ctx, "provider-ref-9")
+	if err != nil {
+		t.Fatalf("verify paid: %v", err)
+	}
+	if !status.Paid || status.AmountKobo != 1010000 || status.PaymentRef != "PAY-provider-ref-9" {
+		t.Fatalf("paid status = %+v, want paid/1010000/PAY-provider-ref-9", status)
+	}
+}
+
+func TestKoboFromNaira(t *testing.T) {
+	cases := map[string]int64{
+		"":          0,
+		"0.00":      0,
+		"1.00":      100,
+		"10100.00":  1010000,
+		"9.99":      999,
+		"300":       30000,
+		"12.5":      1250,
+		"12.345":    1234,
+		"  50.00  ": 5000,
+		"bad":       0,
+	}
+	for in, want := range cases {
+		if got := koboFromNaira(in); got != want {
+			t.Errorf("koboFromNaira(%q) = %d, want %d", in, got, want)
 		}
 	}
 }

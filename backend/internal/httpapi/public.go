@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
 
 	"escrowpay/internal/pocket"
@@ -44,6 +45,64 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.respondView(w, r, rec.ID, role)
+}
+
+type claimBrokerRequest struct {
+	VendorAmountKobo int64 `json:"vendor_amount_kobo"`
+}
+
+type claimBrokerResponse struct {
+	Pocket pocketView `json:"pocket"`
+	// VendorShareURL is the fresh invitation the broker forwards to the real
+	// seller; the link the broker received stops being a credential.
+	VendorShareURL string            `json:"vendor_share_url"`
+	Tokens         map[string]string `json:"tokens"`
+}
+
+// handleClaimBroker converts a buyer-created p2p draft into a brokered pocket
+// on behalf of a middleman holding the vendor invitation. The caller names the
+// vendor's allocation; the remainder of the item amount becomes their
+// commission, and the response carries the fresh vendor invitation to forward.
+// Only the unclaimed vendor seat of a buyer-created draft converts.
+func (a *API) handleClaimBroker(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requireUser(w, r)
+	if !ok {
+		return
+	}
+	var req claimBrokerRequest
+	if err := decodeJSON(r, &req); err != nil {
+		a.writeError(w, err)
+		return
+	}
+	rec, parts, err := a.app.LoadByShortCode(r.Context(), r.PathValue("shortCode"))
+	if err != nil {
+		a.writeError(w, err)
+		return
+	}
+	role, err := a.inviteRole(r, rec.ID, user.ID, parts)
+	if err != nil {
+		a.writeError(w, err)
+		return
+	}
+	if role != string(pocket.RoleVendor) {
+		a.writeError(w, errForbidden)
+		return
+	}
+	out, err := a.app.ConvertToBrokered(r.Context(), rec.ID, user.ID, req.VendorAmountKobo)
+	if err != nil {
+		a.writeError(w, err)
+		return
+	}
+	converted, convertedParts, err := a.app.Load(r.Context(), rec.ID)
+	if err != nil {
+		a.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, claimBrokerResponse{
+		Pocket:         a.pocketView(converted, convertedParts, string(pocket.RoleBroker)),
+		VendorShareURL: fmt.Sprintf("/p/%s?t=%s", rec.ShortCode, out.Tokens[string(pocket.RoleVendor)]),
+		Tokens:         out.Tokens,
+	})
 }
 
 type acceptRequest struct {

@@ -147,10 +147,19 @@ func (a *App) applyFundingEvent(ctx context.Context, ev GatewayEvent) (bool, err
 	if err != nil {
 		return false, err
 	}
-	if ev.AmountKobo > 0 && ev.AmountKobo < rec.Pocket.BuyerTotalKobo() {
+	return a.creditFunding(ctx, rec, ev.AmountKobo, ev.PaymentRef)
+}
+
+// creditFunding applies a confirmed payment to a pocket: it refuses
+// underpayment, drives CREATED → FUNDED through the transition executor, and
+// records the payment's provider transaction id write-once. It is shared by
+// the webhook ingester and the pull-side verifier, and is idempotent: a pocket
+// already at or past FUNDED reports success without moving anything.
+func (a *App) creditFunding(ctx context.Context, rec store.PocketRecord, amountKobo int64, paymentRef string) (bool, error) {
+	if amountKobo > 0 && amountKobo < rec.Pocket.BuyerTotalKobo() {
 		a.logger.Error("payment amount below the pocket's buyer total; not funding",
 			slog.String("pocket_id", rec.ID),
-			slog.Int64("paid_kobo", ev.AmountKobo),
+			slog.Int64("paid_kobo", amountKobo),
 			slog.Int64("expected_kobo", rec.Pocket.BuyerTotalKobo()))
 		return false, nil
 	}
@@ -170,14 +179,14 @@ func (a *App) applyFundingEvent(ctx context.Context, ev GatewayEvent) (bool, err
 			// operator-driven refund.
 			a.logger.Error("payment received for a closed pocket; operator refund required",
 				slog.String("pocket_id", rec.ID), slog.String("state", string(current.Pocket.State)),
-				slog.String("payment_ref", ev.PaymentRef))
+				slog.String("payment_ref", paymentRef))
 			return false, nil
 		}
 	default:
 		return false, err
 	}
 
-	if err := a.store.SetFundingTransaction(ctx, rec.ID, ev.PaymentRef); err != nil {
+	if err := a.store.SetFundingTransaction(ctx, rec.ID, paymentRef); err != nil {
 		return false, err
 	}
 	return true, nil

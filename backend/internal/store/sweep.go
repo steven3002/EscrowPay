@@ -84,6 +84,34 @@ func (s *Store) sweepOne(ctx context.Context, now time.Time, actor, where string
 	return result, found, nil
 }
 
+// PocketsAwaitingFunding lists the ids of CREATED pockets whose funding window
+// is still open and whose funding link exists — the set worth asking the
+// provider about when reconciling payments whose notification never arrived.
+func (s *Store) PocketsAwaitingFunding(ctx context.Context, now time.Time) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id FROM pockets
+		WHERE state = $1
+		  AND funding_link_ref IS NOT NULL
+		  AND (funding_expires_at IS NULL OR funding_expires_at > $2)
+		ORDER BY created_at
+		LIMIT 100`,
+		string(pocket.StateCreated), now)
+	if err != nil {
+		return nil, fmt.Errorf("query pockets awaiting funding: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan pocket id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // AttestNonReceipt records the buyer's sworn statement that they never received
 // the item while the pocket is FROZEN. It changes no domain state; it arms the
 // grace-lapse refund (#9), which the sweeper performs only once this flag is set.

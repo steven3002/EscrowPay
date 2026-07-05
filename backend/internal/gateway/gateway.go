@@ -115,6 +115,27 @@ type Gateway interface {
 	Refund(ctx context.Context, req RefundRequest) (gatewayRef string, err error)
 }
 
+// FundingStatus is a provider's answer to whether a funding order has been
+// paid. Paid is definitive only when true; a false Paid means the provider has
+// no record of a completed payment yet, not that one can never arrive.
+type FundingStatus struct {
+	Paid bool
+	// PaymentRef is the provider's transaction reference for the payment,
+	// when one was reported.
+	PaymentRef string
+	// AmountKobo is the order amount the provider reports, 0 when unstated.
+	AmountKobo int64
+}
+
+// FundingVerifier is an optional interface a Gateway may implement to answer
+// whether a funding order was paid, keyed on the order reference the funding
+// link was minted under. It lets the application confirm a payment without
+// waiting on a provider notification — the buyer returning from a hosted
+// checkout is the natural moment to ask.
+type FundingVerifier interface {
+	VerifyFunding(ctx context.Context, orderRef string) (FundingStatus, error)
+}
+
 // PayoutStatus is a provider's answer to whether a previously submitted
 // disbursement executed.
 type PayoutStatus int

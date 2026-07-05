@@ -219,8 +219,8 @@ func TestDeliveryDeadlineFreezeThenVendorRefund(t *testing.T) {
 		Scan(&role, &amount); err != nil {
 		t.Fatal(err)
 	}
-	if role != "buyer" || amount != 1020000 {
-		t.Fatalf("refund = %s/%d, want buyer/1020000", role, amount)
+	if role != "buyer" || amount != 1010000 {
+		t.Fatalf("refund = %s/%d, want buyer/1010000", role, amount)
 	}
 }
 

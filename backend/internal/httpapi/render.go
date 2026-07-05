@@ -50,7 +50,8 @@ func classify(err error) (int, string) {
 		return http.StatusForbidden, "not permitted for this role"
 	case errors.Is(err, store.ErrNotFound):
 		return http.StatusNotFound, "not found"
-	case errors.Is(err, pocketapp.ErrInvalidInput), errors.Is(err, pocket.ErrInvalidSpec), errors.Is(err, errBadRequest):
+	case errors.Is(err, pocketapp.ErrInvalidInput), errors.Is(err, pocket.ErrInvalidSpec),
+		errors.Is(err, store.ErrInvalidSplit), errors.Is(err, errBadRequest):
 		return http.StatusBadRequest, messageOf(err)
 	case errors.Is(err, pocket.ErrCodeLocked):
 		return http.StatusLocked, "release code entry is locked after too many attempts"

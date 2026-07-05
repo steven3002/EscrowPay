@@ -14,6 +14,7 @@ import (
 // Driver is the set of sweep rules the Sweeper drives. Each drains one rule and
 // returns how many pockets (or legs) it processed. Implemented by pocketapp.App.
 type Driver interface {
+	SweepPendingFundingVerification(ctx context.Context) (int, error)
 	SweepExpiredFunding(ctx context.Context) (int, error)
 	SweepDeliveryDeadlines(ctx context.Context) (int, error)
 	SweepGraceRefunds(ctx context.Context) (int, error)
@@ -42,17 +43,18 @@ func NewSweeper(driver Driver, interval time.Duration, logger *slog.Logger) *Swe
 
 // Report tallies one tick's work.
 type Report struct {
-	Expired        int
-	Frozen         int
-	GraceRefunded  int
-	Settled        int
-	LegsResolved   int
-	LegsReconciled int
+	FundingVerified int
+	Expired         int
+	Frozen          int
+	GraceRefunded   int
+	Settled         int
+	LegsResolved    int
+	LegsReconciled  int
 }
 
 // Total is the number of state changes and leg disbursements in the report.
 func (r Report) Total() int {
-	return r.Expired + r.Frozen + r.GraceRefunded + r.Settled + r.LegsResolved + r.LegsReconciled
+	return r.FundingVerified + r.Expired + r.Frozen + r.GraceRefunded + r.Settled + r.LegsResolved + r.LegsReconciled
 }
 
 // Run drives a tick immediately and then once per interval until ctx is
@@ -74,13 +76,15 @@ func (s *Sweeper) Run(ctx context.Context) {
 	}
 }
 
-// Tick applies every rule once, in dependency order: freezes may create grace
-// refunds, settlements and refunds create legs, inflight resolution may
-// release legs back to pending, and the reconciliation pass then disburses
-// whatever is pending. Rule errors are logged and do not abort the tick; the
-// next tick retries. The returned Report is primarily for tests.
+// Tick applies every rule once, in dependency order: funding verification may
+// credit payments before the expiry rule closes their window, freezes may
+// create grace refunds, settlements and refunds create legs, inflight
+// resolution may release legs back to pending, and the reconciliation pass
+// then disburses whatever is pending. Rule errors are logged and do not abort
+// the tick; the next tick retries. The returned Report is primarily for tests.
 func (s *Sweeper) Tick(ctx context.Context) Report {
 	var r Report
+	r.FundingVerified = s.run(ctx, "verify_funding", s.driver.SweepPendingFundingVerification)
 	r.Expired = s.run(ctx, "expire_funding", s.driver.SweepExpiredFunding)
 	r.Frozen = s.run(ctx, "freeze_delivery", s.driver.SweepDeliveryDeadlines)
 	r.GraceRefunded = s.run(ctx, "grace_refund", s.driver.SweepGraceRefunds)
@@ -89,6 +93,7 @@ func (s *Sweeper) Tick(ctx context.Context) Report {
 	r.LegsReconciled = s.run(ctx, "reconcile_legs", s.driver.SweepPendingSettlementLegs)
 	if n := r.Total(); n > 0 {
 		s.logger.Info("sweeper tick",
+			slog.Int("funding_verified", r.FundingVerified),
 			slog.Int("expired", r.Expired),
 			slog.Int("frozen", r.Frozen),
 			slog.Int("grace_refunded", r.GraceRefunded),

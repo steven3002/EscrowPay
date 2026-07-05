@@ -101,9 +101,16 @@ export interface CreateRequest {
   delivery_window_minutes: number;
   amount_kobo: number;
   commission_kobo: number;
-  premium_kobo: number;
   item_description: string;
   category: string;
+}
+
+// FeeQuote is the platform's Protection Premium for a goods value, computed
+// server-side from a fixed schedule. The client displays it; it never sets it.
+export interface FeeQuote {
+  goods_kobo: number;
+  premium_kobo: number;
+  buyer_total_kobo: number;
 }
 
 export interface CreateResponse {
@@ -120,6 +127,18 @@ export interface CodeEntryResult {
   state: PocketState;
   locked: boolean;
   attempts_remaining: number;
+}
+
+export interface VerifyFundingResult {
+  funded: boolean;
+  state: PocketState;
+}
+
+export interface ClaimBrokerResponse {
+  pocket: PocketView;
+  /** The fresh vendor invitation the broker forwards to the real seller. */
+  vendor_share_url: string;
+  tokens: Partial<Record<Role, string>>;
 }
 
 export interface EvidenceItem {
@@ -237,6 +256,9 @@ export const api = {
 
   myPockets: () => request<{ pockets: PocketSummary[] }>("GET", "/me/pockets"),
 
+  feeQuote: (goodsKobo: number) =>
+    request<FeeQuote>("GET", `/fees?goods_kobo=${goodsKobo}`),
+
   createPocket: (req: CreateRequest) =>
     request<CreateResponse>("POST", "/pockets", { body: req }),
 
@@ -245,6 +267,15 @@ export const api = {
 
   claim: (shortCode: string, token: string) =>
     request<PocketView>("POST", `/p/${shortCode}/claim`, { token, body: {} }),
+
+  claimBroker: (shortCode: string, token: string, vendorAmountKobo: number) =>
+    request<ClaimBrokerResponse>("POST", `/p/${shortCode}/claim-broker`, {
+      token,
+      body: { vendor_amount_kobo: vendorAmountKobo },
+    }),
+
+  verifyFunding: (shortCode: string, token: string) =>
+    request<VerifyFundingResult>("POST", `/p/${shortCode}/verify-funding`, { token }),
 
   accept: (shortCode: string, token: string, deliveryAddress?: string) =>
     request<PocketView>("POST", `/p/${shortCode}/accept`, {

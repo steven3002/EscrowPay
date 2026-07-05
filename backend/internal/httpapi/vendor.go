@@ -17,9 +17,12 @@ type createRequest struct {
 	DeliveryWindowMinutes   int    `json:"delivery_window_minutes"`
 	AmountKobo              int64  `json:"amount_kobo"`
 	CommissionKobo          int64  `json:"commission_kobo"`
-	PremiumKobo             int64  `json:"premium_kobo"`
-	ItemDescription         string `json:"item_description"`
-	Category                string `json:"category"`
+	// PremiumKobo is accepted for wire compatibility but ignored: the
+	// Protection Premium is platform policy, computed server-side from the
+	// goods value (see GET /api/fees).
+	PremiumKobo     int64  `json:"premium_kobo"`
+	ItemDescription string `json:"item_description"`
+	Category        string `json:"category"`
 }
 
 type createResponse struct {
@@ -53,7 +56,6 @@ func (a *API) handleCreate(w http.ResponseWriter, r *http.Request) {
 		DeliveryWindow:   time.Duration(req.DeliveryWindowMinutes) * time.Minute,
 		AmountKobo:       req.AmountKobo,
 		CommissionKobo:   req.CommissionKobo,
-		PremiumKobo:      req.PremiumKobo,
 		ItemDescription:  req.ItemDescription,
 		Category:         defaultStr(req.Category, "general"),
 		CreatorUserID:    user.ID,

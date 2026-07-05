@@ -358,8 +358,8 @@ func TestCancelDraftAndCreatedAndFunded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("settlement lookup: %v", err)
 		}
-		if direction != "refund" || role != "buyer" || amount != 1020000 {
-			t.Fatalf("settlement = %s/%s/%d, want refund/buyer/1020000", direction, role, amount)
+		if direction != "refund" || role != "buyer" || amount != 1010000 {
+			t.Fatalf("settlement = %s/%s/%d, want refund/buyer/1010000", direction, role, amount)
 		}
 	})
 }

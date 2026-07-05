@@ -24,13 +24,14 @@ type Call struct {
 
 // Gateway is the mock implementation. The zero value is not usable; use New.
 type Gateway struct {
-	mu    sync.Mutex
-	calls []Call
-	byKey map[string]string
+	mu      sync.Mutex
+	calls   []Call
+	byKey   map[string]string
+	funding map[string]gateway.FundingStatus
 }
 
 func New() *Gateway {
-	return &Gateway{byKey: make(map[string]string)}
+	return &Gateway{byKey: make(map[string]string), funding: make(map[string]gateway.FundingStatus)}
 }
 
 func (g *Gateway) CreateFundingLink(_ context.Context, req gateway.CreateFundingLinkRequest) (gateway.FundingLink, error) {
@@ -66,6 +67,23 @@ func (g *Gateway) execute(method, pocketID string, amountKobo int64, idempotency
 	g.byKey[idempotencyKey] = ref
 	g.calls = append(g.calls, Call{Method: method, PocketID: pocketID, AmountKobo: amountKobo, IdempotencyKey: idempotencyKey})
 	return ref, nil
+}
+
+// SetFundingStatus primes the answer VerifyFunding returns for an order
+// reference, standing in for a provider that has (or has not) seen a payment.
+func (g *Gateway) SetFundingStatus(orderRef string, status gateway.FundingStatus) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.funding[orderRef] = status
+}
+
+// VerifyFunding implements gateway.FundingVerifier: unseeded references report
+// unpaid, exactly like a provider with no record of a payment.
+func (g *Gateway) VerifyFunding(_ context.Context, orderRef string) (gateway.FundingStatus, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls = append(g.calls, Call{Method: "VerifyFunding", IdempotencyKey: orderRef})
+	return g.funding[orderRef], nil
 }
 
 // Calls returns a copy of every effectful invocation, in order.

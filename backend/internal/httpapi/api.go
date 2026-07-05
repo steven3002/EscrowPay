@@ -102,9 +102,11 @@ func New(cfg Config) *API {
 //	auth    — GET  /api/auth/providers | /me · POST /demo | /logout
 //	          GET  /api/auth/google/start | /google/callback
 //	me      — GET  /api/me/pockets                              (dashboard)
+//	fees    — GET  /api/fees                                    (premium quote)
 //	create  — POST /api/pockets                                 (session)
 //	public  — GET  /api/p/{shortCode}                           (role-scoped view)
-//	          POST /api/p/{shortCode}/claim | /accept | /cancel
+//	          POST /api/p/{shortCode}/claim | /claim-broker | /accept | /cancel
+//	          POST /api/p/{shortCode}/verify-funding            (payment check)
 //	vendor  — POST /api/p/{shortCode}/enter-code                (Release Code)
 //	          POST /api/p/{shortCode}/confirm-dispatch-failure  (frozen refund)
 //	buyer   — GET  /api/pockets/{id}/release-code               (buyer-only)
@@ -123,12 +125,15 @@ func (a *API) Register(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/me/pockets", a.handleMyPockets)
 
+	mux.HandleFunc("GET /api/fees", a.handleFeeQuote)
 	mux.HandleFunc("POST /api/pockets", a.limitWrites(a.handleCreate))
 
 	mux.HandleFunc("GET /api/p/{shortCode}", a.handlePublicView)
 	mux.HandleFunc("POST /api/p/{shortCode}/claim", a.limitWrites(a.handleClaim))
+	mux.HandleFunc("POST /api/p/{shortCode}/claim-broker", a.limitWrites(a.handleClaimBroker))
 	mux.HandleFunc("POST /api/p/{shortCode}/accept", a.limitWrites(a.handleAccept))
 	mux.HandleFunc("POST /api/p/{shortCode}/cancel", a.limitWrites(a.handleCancel))
+	mux.HandleFunc("POST /api/p/{shortCode}/verify-funding", a.limitWrites(a.handleVerifyFunding))
 
 	mux.HandleFunc("POST /api/p/{shortCode}/enter-code", a.limitWrites(a.handleEnterCode))
 	mux.HandleFunc("POST /api/p/{shortCode}/report-issue", a.limitWrites(a.handleReportIssue))

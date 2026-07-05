@@ -43,6 +43,33 @@ func (a *API) handleEnterCode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type verifyFundingResponse struct {
+	Funded bool   `json:"funded"`
+	State  string `json:"state"`
+}
+
+// handleVerifyFunding asks the payment provider whether this pocket's funding
+// order has been paid and credits it if so. It is the pull-side complement to
+// the payment webhook: the buyer returning from a hosted checkout, or a vendor
+// checking, triggers it, so a payment whose notification never arrived still
+// funds the pocket. It is safe to call repeatedly and by any participant — the
+// credit runs through the same idempotent path the webhook uses.
+func (a *API) handleVerifyFunding(w http.ResponseWriter, r *http.Request) {
+	rec, _, ok := a.authByShortCode(w, r)
+	if !ok {
+		return
+	}
+	check, err := a.app.VerifyFunding(r.Context(), rec.ID)
+	if err != nil {
+		a.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, verifyFundingResponse{
+		Funded: check.Funded,
+		State:  string(check.State),
+	})
+}
+
 // handleReportIssue opens a dispute for the buyer within the inspection window
 // (#12).
 func (a *API) handleReportIssue(w http.ResponseWriter, r *http.Request) {
