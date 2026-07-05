@@ -97,10 +97,10 @@ export default function PocketClient({ shortCode, token }: { shortCode: string; 
   return (
     <Page>
       <TopBar shortCode={shortCode} />
-      <div className="mb-4 mt-2 flex items-start justify-between gap-3">
+      <div className="mb-5 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="truncate text-xl font-bold">{pocket.item.description}</h1>
-          <p className="text-xs text-muted">
+          <h1 className="truncate text-2xl font-semibold tracking-tight">{pocket.item.description}</h1>
+          <p className="mt-1 text-sm capitalize text-muted">
             {pocket.item.category} · you are the {pocket.your_role}
           </p>
         </div>
@@ -118,11 +118,11 @@ export default function PocketClient({ shortCode, token }: { shortCode: string; 
 
 function TopBar({ shortCode }: { shortCode: string }) {
   return (
-    <div className="mb-2 flex items-center justify-between">
-      <Link href="/" className="text-sm text-muted">
-        ← EscrowPay
+    <div className="mb-4 flex items-center justify-between">
+      <Link href="/" className="text-sm font-medium text-muted transition-colors hover:text-foreground">
+        ← Home
       </Link>
-      <span className="font-mono text-xs text-muted">{shortCode}</span>
+      <span className="rounded-full bg-surface-muted px-2.5 py-1 font-mono text-xs text-muted">{shortCode}</span>
     </div>
   );
 }
@@ -343,7 +343,7 @@ function PayPanel(props: ActionProps) {
             href={p.funding_url}
             target="_blank"
             rel="noopener noreferrer"
-            className="block w-full rounded-xl bg-emerald-600 px-4 py-3 text-center font-semibold text-white transition hover:bg-emerald-500"
+            className="block w-full rounded-xl bg-accent px-4 py-3 text-center font-semibold text-white transition hover:bg-accent-strong"
           >
             Pay {formatKobo(p.money.buyer_total_kobo)} securely
           </a>
@@ -396,10 +396,10 @@ function AwaitPaymentPanel({ p, shortCode, token, refresh }: ActionProps) {
 function CodeShield() {
   return (
     <div className="rounded-xl border-2 border-red-500 bg-red-500/10 px-4 py-3">
-      <p className="text-sm font-extrabold uppercase tracking-wide text-red-700 dark:text-red-300">
+      <p className="text-sm font-extrabold uppercase tracking-wide text-red-700">
         ✋ Stop — this code is your money
       </p>
-      <ul className="mt-2 grid list-disc gap-1 pl-4 text-sm text-red-900 dark:text-red-200">
+      <ul className="mt-2 grid list-disc gap-1 pl-4 text-sm text-red-900">
         <li>
           <strong>Never</strong> give this code over a phone call, chat, or WhatsApp — not to the
           seller, not to &ldquo;support&rdquo;.
@@ -427,7 +427,7 @@ function ReleaseCodePanel({ p, token }: ActionProps) {
       <div className="mt-4">
         {code ? (
           <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-6 text-center">
-            <div className="font-mono text-4xl font-bold tracking-[0.3em] text-emerald-700 dark:text-emerald-300">
+            <div className="font-mono text-4xl font-bold tracking-[0.3em] text-emerald-700">
               {code}
             </div>
           </div>
@@ -665,7 +665,7 @@ function EvidenceUpload({
       </p>
       {error && <div className="mb-3"><Banner tone="red">{error}</Banner></div>}
       {done && <div className="mb-3"><Banner tone="emerald">Evidence uploaded.</Banner></div>}
-      <label className="inline-flex h-12 w-full cursor-pointer items-center justify-center rounded-xl border border-border bg-transparent text-sm font-semibold hover:bg-black/5 dark:hover:bg-white/5">
+      <label className="inline-flex h-12 w-full cursor-pointer items-center justify-center rounded-xl border border-border bg-surface text-sm font-semibold hover:bg-surface-muted">
         {busy ? <Spinner /> : "Capture / choose file"}
         <input
           type="file"

@@ -84,7 +84,7 @@ function LoginScreen() {
           {providers.google && (
             <a
               href={`/api/auth/google/start?next=${encodeURIComponent(next)}`}
-              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-semibold hover:bg-black/5 dark:hover:bg-white/5"
+              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-semibold hover:bg-surface-muted"
             >
               Continue with Google
             </a>

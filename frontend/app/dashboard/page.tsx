@@ -6,9 +6,9 @@ import { api, ApiError, type PocketSummary, type Role } from "@/lib/api";
 import { formatKobo, stateTone, countdown } from "@/lib/format";
 import { useMe } from "@/lib/useMe";
 import { usePolling } from "@/lib/usePolling";
-import { AppHeader } from "@/components/AppHeader";
 import { StateBadge } from "@/components/StateBadge";
-import { Badge, Banner, Card, LinkButton, Page, SectionTitle, Spinner } from "@/components/ui";
+import { Badge, Banner, Card, EmptyState, LinkButton, Page, SectionTitle, Skeleton } from "@/components/ui";
+import { PocketsIcon } from "@/components/icons";
 
 const ROLE_TONE: Record<Role, string> = { buyer: "blue", vendor: "emerald", broker: "amber" };
 
@@ -40,7 +40,6 @@ export default function Dashboard() {
   if (known && !user) {
     return (
       <Page>
-        <AppHeader user={user} known={known} next="/dashboard" />
         <Card>
           <SectionTitle>Your pockets</SectionTitle>
           <p className="mb-4 text-sm text-muted">Sign in to see every deal you take part in.</p>
@@ -58,10 +57,9 @@ export default function Dashboard() {
 
   return (
     <Page>
-      <AppHeader user={user} known={known} next="/dashboard" />
       <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Your pockets</h1>
-        <Link href="/create" className="text-sm font-semibold text-emerald-700 underline dark:text-emerald-300">
+        <h1 className="text-3xl font-semibold tracking-tight">Your pockets</h1>
+        <Link href="/create" className="text-sm font-semibold text-accent hover:underline">
           + New
         </Link>
       </div>
@@ -73,8 +71,8 @@ export default function Dashboard() {
             onClick={() => setRoleFilter(r)}
             className={`rounded-full px-3 py-1.5 text-xs font-semibold capitalize transition-colors ${
               roleFilter === r
-                ? "bg-emerald-600 text-white"
-                : "border border-border text-muted hover:bg-black/5 dark:hover:bg-white/5"
+                ? "bg-accent text-white"
+                : "border border-border text-muted hover:bg-surface-muted"
             }`}
           >
             {r}
@@ -84,25 +82,32 @@ export default function Dashboard() {
 
       {error && <div className="mb-4"><Banner tone="red">{error}</Banner></div>}
       {pockets === null && !error && (
-        <div className="flex justify-center pt-10 text-muted">
-          <Spinner />
+        <div className="grid gap-2.5">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-[70px] rounded-2xl" />
+          ))}
         </div>
       )}
       {pockets !== null && filtered.length === 0 && (
-        <Card>
-          <p className="mb-4 text-sm text-muted">
-            Nothing here yet. Create a pocket or open a link someone shared with you.
-          </p>
-          <LinkButton href="/create" tone="primary">
-            Create a pocket
-          </LinkButton>
-        </Card>
+        <EmptyState
+          icon={<PocketsIcon className="h-6 w-6" />}
+          title={roleFilter === "all" ? "No pockets yet" : `No ${roleFilter} pockets`}
+          action={
+            <LinkButton href="/create" tone="primary">
+              Create a pocket
+            </LinkButton>
+          }
+        >
+          {roleFilter === "all"
+            ? "Create a pocket or open a link someone shared with you — every deal you join shows up here."
+            : "Nothing under this filter yet. Try another role, or start a new pocket."}
+        </EmptyState>
       )}
 
       {active.length > 0 && (
         <section className="mb-6">
           <SectionTitle>Active</SectionTitle>
-          <div className="grid gap-2">
+          <div className="grid gap-2.5">
             {active.map((p) => (
               <PocketCard key={`${p.short_code}-${p.role}`} p={p} />
             ))}
@@ -112,7 +117,7 @@ export default function Dashboard() {
       {ended.length > 0 && (
         <section>
           <SectionTitle>Ended</SectionTitle>
-          <div className="grid gap-2">
+          <div className="grid gap-2.5">
             {ended.map((p) => (
               <PocketCard key={`${p.short_code}-${p.role}`} p={p} />
             ))}

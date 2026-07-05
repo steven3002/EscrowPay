@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState } from "react";
 import {
   Banner,
   Button,
@@ -19,14 +20,20 @@ import { api, ApiError, type CreateResponse, type Role, type Structure } from "@
 import { formatKobo } from "@/lib/format";
 import { remember } from "@/lib/recent";
 import { useMe } from "@/lib/useMe";
-import { AppHeader } from "@/components/AppHeader";
 
 const CATEGORIES = ["electronics", "phones", "fashion", "beauty", "home", "general"];
 
-export default function CreatePage() {
+function CreateScreen() {
   const { user, known } = useMe();
-  const [structure, setStructure] = useState<Structure>("p2p");
-  const [creatorRole, setCreatorRole] = useState<Role>("vendor");
+  // Home's suggestion chips deep-link the deal shape: ?as=vendor|buyer preselects
+  // the creator's role; ?type=brokered opens the three-party flow.
+  const params = useSearchParams();
+  const [structure, setStructure] = useState<Structure>(
+    params.get("type") === "brokered" ? "brokered" : "p2p",
+  );
+  const [creatorRole, setCreatorRole] = useState<Role>(
+    params.get("as") === "buyer" ? "buyer" : "vendor",
+  );
   const [item, setItem] = useState("");
   const [category, setCategory] = useState("electronics");
   const [amountNaira, setAmountNaira] = useState("");
@@ -41,6 +48,16 @@ export default function CreatePage() {
   const [result, setResult] = useState<CreateResponse | null>(null);
 
   const brokered = structure === "brokered";
+  // When a home chip deep-links the shape, commit to it: hide the type/role
+  // selectors and show a compact summary with a "Change" escape hatch.
+  const lockedFromChip =
+    params.get("type") === "brokered" || params.get("as") === "buyer" || params.get("as") === "vendor";
+  const lockedLabel =
+    params.get("type") === "brokered"
+      ? "Brokered — you connect a buyer and a seller"
+      : params.get("as") === "buyer"
+        ? "Direct — you're the buyer"
+        : "Direct — you're the vendor";
   const effectiveCreatorRole: Role = brokered ? "broker" : creatorRole;
   const amountKobo = Math.round(Number(amountNaira || 0) * 100);
   const commissionKobo = brokered ? Math.round(Number(commissionNaira || 0) * 100) : 0;
@@ -95,7 +112,6 @@ export default function CreatePage() {
   if (known && !user) {
     return (
       <Page>
-        <AppHeader user={user} known={known} next="/create" />
         <Card>
           <SectionTitle>New pocket</SectionTitle>
           <p className="mb-4 text-sm text-muted">
@@ -111,25 +127,44 @@ export default function CreatePage() {
 
   return (
     <Page>
-      <AppHeader user={user} known={known} next="/create" />
-      <h1 className="mb-1 text-2xl font-bold">New pocket</h1>
-      <p className="mb-6 text-sm text-muted">Set the terms every side will see.</p>
+      <header className="mb-6">
+        <h1 className="text-3xl font-semibold tracking-tight">New pocket</h1>
+        <p className="mt-1.5 text-sm text-muted">
+          Set the terms both sides agree to. The bank holds the money until the buyer confirms the
+          handoff.
+        </p>
+      </header>
 
+      <Card>
       <form onSubmit={submit} className="grid gap-4">
-        <Field label="Transaction type">
-          <Select value={structure} onChange={(e) => setStructure(e.target.value as Structure)}>
-            <option value="p2p">Direct — you and one other person</option>
-            <option value="brokered">Brokered — I connect a buyer and a seller</option>
-          </Select>
-        </Field>
+        {lockedFromChip ? (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface-muted px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-muted">Deal type</p>
+              <p className="truncate text-sm font-semibold">{lockedLabel}</p>
+            </div>
+            <Link href="/create" className="shrink-0 text-xs font-semibold text-accent hover:underline">
+              Change
+            </Link>
+          </div>
+        ) : (
+          <>
+            <Field label="Transaction type">
+              <Select value={structure} onChange={(e) => setStructure(e.target.value as Structure)}>
+                <option value="p2p">Direct — you and one other person</option>
+                <option value="brokered">Brokered — I connect a buyer and a seller</option>
+              </Select>
+            </Field>
 
-        {!brokered && (
-          <Field label="I am the">
-            <Select value={creatorRole} onChange={(e) => setCreatorRole(e.target.value as Role)}>
-              <option value="vendor">Vendor (selling)</option>
-              <option value="buyer">Buyer (paying)</option>
-            </Select>
-          </Field>
+            {!brokered && (
+              <Field label="I am the">
+                <Select value={creatorRole} onChange={(e) => setCreatorRole(e.target.value as Role)}>
+                  <option value="vendor">Vendor (selling)</option>
+                  <option value="buyer">Buyer (paying)</option>
+                </Select>
+              </Field>
+            )}
+          </>
         )}
 
         <Field label="Item">
@@ -196,7 +231,7 @@ export default function CreatePage() {
         </div>
 
         {amountKobo > 0 && (
-          <Card className="!bg-background">
+          <Card className="!bg-surface-muted !shadow-none">
             <Row label={brokered ? "Vendor allocation" : "Item amount"} value={formatKobo(amountKobo)} />
             {brokered && <Row label="Your commission" value={formatKobo(commissionKobo)} />}
             <Row label="Protection fee" value={formatKobo(premiumKobo)} />
@@ -211,7 +246,24 @@ export default function CreatePage() {
           {busy ? <Spinner /> : "Create pocket"}
         </Button>
       </form>
+      </Card>
     </Page>
+  );
+}
+
+export default function CreatePage() {
+  return (
+    <Suspense
+      fallback={
+        <Page>
+          <div className="flex flex-1 items-center justify-center pt-24 text-muted">
+            <Spinner />
+          </div>
+        </Page>
+      }
+    >
+      <CreateScreen />
+    </Suspense>
   );
 }
 
@@ -228,7 +280,7 @@ function ResultPanel({
   return (
     <Page>
       <BackLink />
-      <h1 className="mb-1 text-2xl font-bold">Pocket created</h1>
+      <h1 className="mb-1 text-3xl font-semibold tracking-tight">Pocket created</h1>
       <p className="mb-6 text-sm text-muted">
         {brokered
           ? "Send each link to the right person. The buyer's link stays inert until the vendor accepts."
@@ -289,7 +341,7 @@ function ShareLink({ path }: { path: string }) {
   }
   return (
     <div className="grid gap-2">
-      <div className="break-all rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs">
+      <div className="break-all rounded-xl border border-border bg-surface-muted px-3 py-2 font-mono text-xs">
         {full}
       </div>
       <Button tone="neutral" onClick={copy} type="button">

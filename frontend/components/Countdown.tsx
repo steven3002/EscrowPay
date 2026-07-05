@@ -20,7 +20,7 @@ export function Countdown({ deadline, label }: { deadline: string; label: string
       <span className="text-sm text-muted">{label}</span>
       <span
         className={`font-mono text-sm font-semibold tabular-nums ${
-          lapsed ? "text-amber-600 dark:text-amber-400" : "text-foreground"
+          lapsed ? "text-amber-600" : "text-foreground"
         }`}
       >
         {lapsed ? "processing…" : text}

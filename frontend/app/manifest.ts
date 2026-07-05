@@ -11,7 +11,7 @@ export default function manifest(): MetadataRoute.Manifest {
       "Buyer-protected delivery for social-commerce payments. Funds are held by the bank until the buyer confirms the handoff.",
     start_url: "/",
     display: "standalone",
-    background_color: "#0a0a0a",
+    background_color: "#f6f7f9",
     theme_color: "#059669",
     icons: [
       { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },

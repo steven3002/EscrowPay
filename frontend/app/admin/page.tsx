@@ -5,7 +5,8 @@ import { useCallback, useState } from "react";
 import { api, ApiError, type DisputeQueueItem } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { usePolling } from "@/lib/usePolling";
-import { Badge, Banner, Button, Card, Page, SectionTitle, Spinner } from "@/components/ui";
+import { Badge, Banner, Button, Card, EmptyState, Page, SectionTitle, Skeleton, Spinner } from "@/components/ui";
+import { ScaleIcon } from "@/components/icons";
 
 export default function AdminQueue() {
   const [items, setItems] = useState<DisputeQueueItem[] | null>(null);
@@ -76,21 +77,23 @@ export default function AdminQueue() {
         </Link>
         <span className="text-xs font-semibold uppercase tracking-wide text-muted">Arbitration</span>
       </div>
-      <h1 className="mb-1 text-2xl font-bold">Dispute queue</h1>
+      <h1 className="mb-1 text-3xl font-semibold tracking-tight">Dispute queue</h1>
       <p className="mb-6 text-sm text-muted">Open disputes awaiting a decision.</p>
 
       {error && <Banner tone="red">{error}</Banner>}
       {items === null && !error && (
-        <div className="flex justify-center pt-10 text-muted">
-          <Spinner />
+        <div className="grid gap-2.5">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-[76px] rounded-2xl" />
+          ))}
         </div>
       )}
       {items && items.length === 0 && (
-        <Card>
-          <Banner tone="emerald">No open disputes. All clear.</Banner>
-        </Card>
+        <EmptyState icon={<ScaleIcon className="h-6 w-6" />} title="No open disputes">
+          All clear. New disputes will appear here the moment they&rsquo;re raised.
+        </EmptyState>
       )}
-      <div className="grid gap-2">
+      <div className="grid gap-2.5">
         {items?.map((d) => (
           <Link key={d.pocket_id} href={`/admin/p/${d.pocket_id}`}>
             <Card className="!p-4">
